@@ -120,8 +120,8 @@ impl RevoraVesting {
         env.storage().persistent().set(&count_key, &(count + 1));
 
         env.events().publish(
-            (EVENT_VESTING_CREATED, admin, beneficiary),
-            (token, total_amount, start_time, cliff_time, end_time, count),
+            (EVENT_VESTING_CREATED, admin.clone(), beneficiary.clone()),
+            (token.clone(), total_amount, start_time, cliff_time, end_time, count),
         );
         env.events().publish(
             (EVENT_VESTING_CREATED_V1, admin, beneficiary),
@@ -166,7 +166,7 @@ impl RevoraVesting {
         schedule.cancelled = true;
         env.storage().persistent().set(&key, &schedule);
         env.events().publish(
-            (EVENT_VESTING_CANCELLED, admin, beneficiary),
+            (EVENT_VESTING_CANCELLED, admin.clone(), beneficiary.clone()),
             (schedule_index, schedule.token.clone()),
         );
         env.events().publish(
@@ -307,8 +307,8 @@ impl RevoraVesting {
         );
 
         env.events().publish(
-            (EVENT_VESTING_CLAIMED, beneficiary.clone(), admin),
-            (schedule_index, schedule.token, claimable),
+            (EVENT_VESTING_CLAIMED, beneficiary.clone(), admin.clone()),
+            (schedule_index, schedule.token.clone(), claimable),
         );
         env.events().publish(
             (EVENT_VESTING_CLAIMED_V1, beneficiary.clone(), admin),

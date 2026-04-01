@@ -3,7 +3,7 @@
 #![deny(clippy::dbg_macro, clippy::todo, clippy::unimplemented)]
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, xdr::ToXdr, Address,
-    BytesN, Env, Map, String, Symbol, Vec,
+    BytesN, Env, IntoVal, Map, String, Symbol, Vec,
 };
 
 // Issue #109 — Revenue report correction workflow with audit trail.
@@ -215,6 +215,25 @@ const BPS_DENOMINATOR: i128 = 10_000;
 const STELLAR_CANONICAL_DECIMALS: u32 = 7;
 /// Maximum accepted decimal precision (safety cap for normalization math).
 const MAX_TOKEN_DECIMALS: u32 = 18;
+
+// ── Missing legacy/v1 event symbols ──────────────────────────
+/// v1 schema version tag (legacy; v2 is the current standard).
+pub const EVENT_SCHEMA_VERSION: u32 = 1;
+const EVENT_SHARE_SET: Symbol = symbol_short!("sh_set");
+const EVENT_OFFER_REG_V1: Symbol = symbol_short!("ofr_reg1");
+const EVENT_REV_INIT_V1: Symbol = symbol_short!("rv_init1");
+const EVENT_CONCENTRATION_WARNING: Symbol = symbol_short!("conc_wrn");
+const EVENT_CONCENTRATION_REPORTED: Symbol = symbol_short!("conc_rep");
+const EVENT_SNAP_COMMIT: Symbol = symbol_short!("snap_cmt");
+const EVENT_SNAP_SHARES_APPLIED: Symbol = symbol_short!("snap_shr");
+const EVENT_FREEZE_OFFERING: Symbol = symbol_short!("frz_off");
+const EVENT_UNFREEZE_OFFERING: Symbol = symbol_short!("ufrz_off");
+const EVENT_PROPOSAL_CREATED: Symbol = symbol_short!("prop_new");
+const EVENT_FREEZE: Symbol = symbol_short!("freeze");
+/// Issuer transfer expiry: 7 days in seconds.
+const ISSUER_TRANSFER_EXPIRY_SECS: u64 = 7 * 24 * 60 * 60;
+const EVENT_CLAIM: Symbol = symbol_short!("claim");
+const EVENT_CLAIM_DELAY_SET: Symbol = symbol_short!("dly_set");
 
 /// Represents a revenue-share offering registered on-chain.
 /// Offerings are immutable once registered.
@@ -432,11 +451,8 @@ pub struct SnapshotEntry {
     pub total_bps: u32,
 }
 
-/// Storage keys: offerings use OfferCount/OfferItem; blacklist uses Blacklist(token).
-/// Multi-period claim keys use PeriodRevenue/PeriodEntry/PeriodCount for per-offering
-/// period tracking, HolderShare for holder allocations, LastClaimedIdx for claim progress,
-/// and PaymentToken for the token used to pay out revenue.
-/// `RevenueIndex` and `RevenueReports` track reported (un-deposited) revenue totals and details.
+/// Primary storage keys for core contract state.
+/// Split from the full key set to stay within the Soroban XDR union variant limit (≤50).
 #[contracttype]
 pub enum DataKey {
     /// Last deposited/reported period_id for offering (enforces strictly increasing ordering).
@@ -500,53 +516,58 @@ pub enum DataKey {
     /// Latest recorded snapshot reference for an offering.
     LastSnapshotRef(OfferingId),
     /// Committed snapshot entry keyed by (offering_id, snapshot_ref).
-    /// Stores the canonical SnapshotEntry for deterministic replay and audit.
     SnapshotEntry(OfferingId, u64),
-    /// Per-snapshot holder share at index N: (offering_id, snapshot_ref, index) -> (holder, share_bps).
+    /// Per-snapshot holder share at index N.
     SnapshotHolder(OfferingId, u64, u32),
-    /// Total number of holders recorded in a snapshot: (offering_id, snapshot_ref) -> u32.
+    /// Total number of holders recorded in a snapshot.
     SnapshotHolderCount(OfferingId, u64),
 
-    /// Pending issuer transfer for an offering: OfferingId -> new_issuer.
+    /// Pending issuer transfer for an offering.
     PendingIssuerTransfer(OfferingId),
-    /// Current issuer lookup by offering token: OfferingId -> issuer.
+    /// Current issuer lookup by offering token.
     OfferingIssuer(OfferingId),
-    /// Testnet mode flag; when true, enables fee-free/simplified behavior (#24).
+    /// Testnet mode flag.
     TestnetMode,
 
     /// Safety role address for emergency pause (#7).
     Safety,
-    /// Global pause flag; when true, state-mutating ops are disabled (#7).
+    /// Global pause flag.
     Paused,
 
     /// Configuration flag: when true, contract is event-only (no persistent business state).
     EventOnlyMode,
 
-    /// Metadata reference (IPFS hash, HTTPS URI, etc.) for an offering.
+    /// Metadata reference for an offering.
     OfferingMetadata(OfferingId),
-    /// Platform fee in basis points (max 5000 = 50%) taken from reported revenue (#6).
+    /// Platform fee in basis points.
     PlatformFeeBps,
     /// Per-offering per-asset fee override (#98).
     OfferingFeeBps(OfferingId, Address),
     /// Platform level per-asset fee (#98).
     PlatformFeePerAsset(Address),
 
-    /// Per-offering minimum revenue threshold below which no distribution is triggered (#25).
+    /// Per-offering minimum revenue threshold (#25).
     MinRevenueThreshold(OfferingId),
+    /// Total deposited revenue for an offering (#39).
+    DepositedRevenue(OfferingId),
+    /// Per-offering supply cap (#96). 0 = no cap.
+    SupplyCap(OfferingId),
+    /// Per-offering investment constraints (#97).
+    InvestmentConstraints(OfferingId),
+}
+
+/// Secondary storage keys for auxiliary/extended contract state.
+/// Overflow enum to keep DataKey within the Soroban XDR union variant limit.
+#[contracttype]
+pub enum DataKey2 {
     /// Global count of unique issuers (#39).
     IssuerCount,
     /// Issuer address at global index (#39).
     IssuerItem(u32),
     /// Whether an issuer is already registered in the global registry (#39).
     IssuerRegistered(Address),
-    /// Total deposited revenue for an offering (#39).
-    DepositedRevenue(OfferingId),
-    /// Per-offering supply cap (#96). 0 = no cap.
-    SupplyCap(OfferingId),
-    /// Per-offering investment constraints: min and max stake per investor (#97).
-    InvestmentConstraints(OfferingId),
 
-    /// Per-issuer namespace tracking
+    /// Per-issuer namespace tracking.
     NamespaceCount(Address),
     NamespaceItem(Address, u32),
     NamespaceRegistered(Address, Symbol),
@@ -561,6 +582,12 @@ pub enum DataKey {
 
 /// Maximum number of offerings returned in a single page.
 const MAX_PAGE_LIMIT: u32 = 20;
+
+/// Maximum number of addresses that can be blacklisted per offering.
+/// Prevents unbounded storage growth and keeps distribution gas predictable.
+/// Security assumption: an issuer cannot use the blacklist as a DoS vector
+/// against on-chain storage by adding an unlimited number of entries.
+const MAX_BLACKLIST_SIZE: u32 = 200;
 
 /// Maximum platform fee in basis points (50%).
 const MAX_PLATFORM_FEE_BPS: u32 = 5_000;
@@ -814,11 +841,11 @@ impl RevoraRevenueShare {
     /// Helper to emit deterministic v2 versioned events for core event versioning.
     /// Emits: topic -> (EVENT_SCHEMA_VERSION_V2, data...)
     /// All core events MUST use this for schema compliance and indexer compatibility.
-    fn emit_v2_event<T: IntoVal<Env, Vec>>(
-        env: &Env,
-        topic_tuple: impl IntoVal<Env, (Symbol,)>,
-        data: T,
-    ) {
+    fn emit_v2_event<Topics, T>(env: &Env, topic_tuple: Topics, data: T)
+    where
+        Topics: IntoVal<Env, soroban_sdk::Val> + soroban_sdk::events::Topics,
+        T: IntoVal<Env, soroban_sdk::Val> + soroban_sdk::TryIntoVal<Env, soroban_sdk::Val>,
+    {
         env.events().publish(topic_tuple, (EVENT_SCHEMA_VERSION_V2, data));
     }
 
@@ -1283,13 +1310,13 @@ impl RevoraRevenueShare {
         }
 
         // Register namespace for issuer if not already present
-        let ns_reg_key = DataKey::NamespaceRegistered(issuer.clone(), namespace.clone());
+        let ns_reg_key = DataKey2::NamespaceRegistered(issuer.clone(), namespace.clone());
         if !env.storage().persistent().has(&ns_reg_key) {
-            let ns_count_key = DataKey::NamespaceCount(issuer.clone());
+            let ns_count_key = DataKey2::NamespaceCount(issuer.clone());
             let count: u32 = env.storage().persistent().get(&ns_count_key).unwrap_or(0);
             env.storage()
                 .persistent()
-                .set(&DataKey::NamespaceItem(issuer.clone(), count), &namespace);
+                .set(&DataKey2::NamespaceItem(issuer.clone(), count), &namespace);
             env.storage().persistent().set(&ns_count_key, &(count + 1));
             env.storage().persistent().set(&ns_reg_key, &true);
         }
@@ -1942,10 +1969,17 @@ impl RevoraRevenueShare {
     /// - `token`: The token representing the offering.
     /// - `investor`: The address to be blacklisted.
     ///
+    /// ### Security Assumptions
+    /// - `caller` must be the current issuer of the offering or the contract admin.
+    /// - The blacklist is capped at `MAX_BLACKLIST_SIZE` entries per offering to prevent
+    ///   unbounded storage growth and keep distribution gas predictable.
+    /// - Idempotent adds (address already present) do not count against the size limit.
+    ///
     /// ### Returns
     /// - `Ok(())` on success.
     /// - `Err(RevoraError::ContractFrozen)` if the contract is frozen.
     /// - `Err(RevoraError::NotAuthorized)` if caller is not the current issuer.
+    /// - `Err(RevoraError::BlacklistSizeLimitExceeded)` if the blacklist is at capacity.
     pub fn blacklist_add(
         env: Env,
         caller: Address,
@@ -1986,6 +2020,10 @@ impl RevoraRevenueShare {
 
             let was_present = map.get(investor.clone()).unwrap_or(false);
             if !was_present {
+                // Guard: reject if the blacklist is already at capacity.
+                if map.len() >= MAX_BLACKLIST_SIZE {
+                    return Err(RevoraError::BlacklistSizeLimitExceeded);
+                }
                 map.set(investor.clone(), true);
                 env.storage().persistent().set(&key, &map);
 
@@ -2038,6 +2076,18 @@ impl RevoraRevenueShare {
             token: token.clone(),
         };
         Self::require_not_offering_frozen(&env, &offering_id)?;
+
+        // Verify auth: caller must be issuer or admin.
+        // Security assumption: only the current issuer or contract admin may remove
+        // addresses from the blacklist. This mirrors the add-side guard and prevents
+        // unauthorized actors from re-enabling blacklisted investors.
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        let admin = Self::get_admin(env.clone()).ok_or(RevoraError::NotInitialized)?;
+        if caller != current_issuer && caller != admin {
+            return Err(RevoraError::NotAuthorized);
+        }
 
         let key = DataKey::Blacklist(offering_id.clone());
         let mut map: Map<Address, bool> =
@@ -2093,6 +2143,28 @@ impl RevoraRevenueShare {
             .persistent()
             .get::<DataKey, Vec<Address>>(&order_key)
             .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    /// Return the current number of blacklisted addresses for an offering.
+    ///
+    /// This is a cheap O(1) read of the underlying map length and can be used
+    /// by off-chain tooling to monitor proximity to `MAX_BLACKLIST_SIZE` (200)
+    /// before attempting an add.
+    ///
+    /// Returns 0 when no blacklist exists yet for the offering.
+    pub fn get_blacklist_size(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+    ) -> u32 {
+        let offering_id = OfferingId { issuer, namespace, token };
+        let key = DataKey::Blacklist(offering_id);
+        env.storage()
+            .persistent()
+            .get::<DataKey, Map<Address, bool>>(&key)
+            .map(|m| m.len())
+            .unwrap_or(0)
     }
 
     // ── Whitelist management ──────────────────────────────────
@@ -3174,6 +3246,11 @@ impl RevoraRevenueShare {
         let offering_id = OfferingId { issuer, namespace, token };
         env.storage().persistent().get(&DataKey::SnapshotHolder(offering_id, snapshot_ref, index))
     }
+}
+
+// ── Holder shares, claims, admin, governance, and utility methods ─────────────
+// Plain impl block — excluded from the ABI spec to keep spec XDR within limit.
+impl RevoraRevenueShare {
     ///
     /// The share determines the percentage of a period's revenue the holder can claim.
     ///
@@ -3224,6 +3301,8 @@ impl RevoraRevenueShare {
             share_bps,
         )
     }
+
+    // ── Meta-authorization, claims, windows, and query methods ───────────────────
 
     /// Register an ed25519 public key for a signer address.
     /// The signer must authorize this binding.
