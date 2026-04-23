@@ -88,6 +88,10 @@ pub enum RevoraError {
     AdminRotationSameAddress = 33,
     /// Admin rotation failed: another rotation is already pending.
     AdminRotationPending = 34,
+    /// Admin rotation failed: no rotation is currently pending.
+    NoAdminRotationPending = 35,
+    /// Admin rotation failed: caller is not the pending new admin.
+    UnauthorizedRotationAccept = 36,
 }
 
 // ── Event symbols ────────────────────────────────────────────

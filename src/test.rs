@@ -7015,3 +7015,432 @@ mod regression {
         assert!(r.is_ok());
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Admin Rotation Safety Flow — Tests [RC26Q2-C19] #268
+//
+// Covers:
+//   mod admin_rotation        — happy-path: propose, accept, cancel, events, get helpers
+//   mod admin_rotation_auth   — abuse paths: wrong signer, impostor, double-propose, wrong accept
+//   mod admin_rotation_edge   — invariants: same-address, pending cleared, coexistence
+//   mod admin_rotation_integration — end-to-end: new admin exercises authority, chain rotations
+//   mod regression            — double-accept, stale-cancel, frozen-contract guards
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Shared helper: deploy contract and initialize with a fresh admin.
+fn rotation_setup() -> (Env, RevoraRevenueShareClient<'static>, Address) {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>, &None::<bool>);
+    (env, client, admin)
+}
+
+// ── Happy-path ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod admin_rotation {
+    use super::*;
+
+    #[test]
+    fn propose_stores_pending_admin() {
+        let (env, client, admin) = rotation_setup();
+        let new_admin = Address::generate(&env);
+
+        client.propose_admin_rotation(&new_admin);
+
+        assert_eq!(client.get_pending_admin_rotation(), Some(new_admin));
+    }
+
+    #[test]
+    fn accept_rotates_admin_and_clears_pending() {
+        let (env, client, _admin) = rotation_setup();
+        let new_admin = Address::generate(&env);
+
+        client.propose_admin_rotation(&new_admin);
+        client.accept_admin_rotation(&new_admin);
+
+        assert_eq!(client.get_admin(), Some(new_admin));
+        assert_eq!(client.get_pending_admin_rotation(), None);
+    }
+
+    #[test]
+    fn cancel_clears_pending_and_preserves_admin() {
+        let (env, client, admin) = rotation_setup();
+        let new_admin = Address::generate(&env);
+
+        client.propose_admin_rotation(&new_admin);
+        client.cancel_admin_rotation();
+
+        assert_eq!(client.get_admin(), Some(admin));
+        assert_eq!(client.get_pending_admin_rotation(), None);
+    }
+
+    #[test]
+    fn get_pending_returns_none_before_propose() {
+        let (_env, client, _admin) = rotation_setup();
+        assert_eq!(client.get_pending_admin_rotation(), None);
+    }
+
+    #[test]
+    fn propose_emits_adm_prop_event() {
+        let (env, client, _admin) = rotation_setup();
+        let new_admin = Address::generate(&env);
+        let before = env.events().all().len();
+
+        client.propose_admin_rotation(&new_admin);
+
+        assert!(env.events().all().len() > before);
+    }
+
+    #[test]
+    fn accept_emits_adm_acc_event() {
+        let (env, client, _admin) = rotation_setup();
+        let new_admin = Address::generate(&env);
+
+        client.propose_admin_rotation(&new_admin);
+        let before = env.events().all().len();
+        client.accept_admin_rotation(&new_admin);
+
+        assert!(env.events().all().len() > before);
+    }
+
+    #[test]
+    fn cancel_emits_adm_canc_event() {
+        let (env, client, _admin) = rotation_setup();
+        let new_admin = Address::generate(&env);
+
+        client.propose_admin_rotation(&new_admin);
+        let before = env.events().all().len();
+        client.cancel_admin_rotation();
+
+        assert!(env.events().all().len() > before);
+    }
+
+    #[test]
+    fn get_admin_returns_current_admin() {
+        let (_env, client, admin) = rotation_setup();
+        assert_eq!(client.get_admin(), Some(admin));
+    }
+
+    #[test]
+    fn chained_rotation_works() {
+        // admin → admin2 → admin3
+        let (env, client, _admin) = rotation_setup();
+        let admin2 = Address::generate(&env);
+        let admin3 = Address::generate(&env);
+
+        client.propose_admin_rotation(&admin2);
+        client.accept_admin_rotation(&admin2);
+        assert_eq!(client.get_admin(), Some(admin2.clone()));
+
+        client.propose_admin_rotation(&admin3);
+        client.accept_admin_rotation(&admin3);
+        assert_eq!(client.get_admin(), Some(admin3));
+    }
+
+    #[test]
+    fn cancel_then_propose_new_succeeds() {
+        let (env, client, _admin) = rotation_setup();
+        let candidate_a = Address::generate(&env);
+        let candidate_b = Address::generate(&env);
+
+        client.propose_admin_rotation(&candidate_a);
+        client.cancel_admin_rotation();
+
+        // Should be able to propose a different address now
+        client.propose_admin_rotation(&candidate_b);
+        assert_eq!(client.get_pending_admin_rotation(), Some(candidate_b));
+    }
+}
+
+// ── Auth / abuse paths ────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod admin_rotation_auth {
+    use super::*;
+
+    #[test]
+    fn accept_with_wrong_address_returns_unauthorized() {
+        let (env, client, _admin) = rotation_setup();
+        let new_admin = Address::generate(&env);
+        let impostor = Address::generate(&env);
+
+        client.propose_admin_rotation(&new_admin);
+
+        let result = client.try_accept_admin_rotation(&impostor);
+        assert_eq!(result, Err(Ok(RevoraError::UnauthorizedRotationAccept)));
+    }
+
+    #[test]
+    fn accept_without_pending_returns_no_rotation_pending() {
+        let (env, client, _admin) = rotation_setup();
+        let addr = Address::generate(&env);
+
+        let result = client.try_accept_admin_rotation(&addr);
+        assert_eq!(result, Err(Ok(RevoraError::NoAdminRotationPending)));
+    }
+
+    #[test]
+    fn cancel_without_pending_returns_no_rotation_pending() {
+        let (_env, client, _admin) = rotation_setup();
+
+        let result = client.try_cancel_admin_rotation();
+        assert_eq!(result, Err(Ok(RevoraError::NoAdminRotationPending)));
+    }
+
+    #[test]
+    fn double_propose_returns_rotation_pending() {
+        let (env, client, _admin) = rotation_setup();
+        let new_admin = Address::generate(&env);
+        let another = Address::generate(&env);
+
+        client.propose_admin_rotation(&new_admin);
+
+        let result = client.try_propose_admin_rotation(&another);
+        assert_eq!(result, Err(Ok(RevoraError::AdminRotationPending)));
+    }
+
+    #[test]
+    fn propose_same_address_returns_same_address_error() {
+        let (_env, client, admin) = rotation_setup();
+
+        let result = client.try_propose_admin_rotation(&admin);
+        assert_eq!(result, Err(Ok(RevoraError::AdminRotationSameAddress)));
+    }
+
+    #[test]
+    fn propose_without_initialized_admin_returns_not_initialized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, RevoraRevenueShare);
+        let client = RevoraRevenueShareClient::new(&env, &contract_id);
+        // No initialize call — Admin key absent
+        let new_admin = Address::generate(&env);
+
+        let result = client.try_propose_admin_rotation(&new_admin);
+        assert_eq!(result, Err(Ok(RevoraError::NotInitialized)));
+    }
+}
+
+// ── Edge / invariant cases ────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod admin_rotation_edge {
+    use super::*;
+
+    #[test]
+    fn pending_cleared_after_accept() {
+        let (env, client, _admin) = rotation_setup();
+        let new_admin = Address::generate(&env);
+
+        client.propose_admin_rotation(&new_admin);
+        client.accept_admin_rotation(&new_admin);
+
+        assert_eq!(client.get_pending_admin_rotation(), None);
+    }
+
+    #[test]
+    fn pending_cleared_after_cancel() {
+        let (env, client, _admin) = rotation_setup();
+        let new_admin = Address::generate(&env);
+
+        client.propose_admin_rotation(&new_admin);
+        client.cancel_admin_rotation();
+
+        assert_eq!(client.get_pending_admin_rotation(), None);
+    }
+
+    #[test]
+    fn rotation_does_not_affect_offering_state() {
+        let (env, client, admin) = rotation_setup();
+        let issuer = admin.clone();
+        let token = Address::generate(&env);
+        let payout_asset = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+
+        client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+
+        client.propose_admin_rotation(&new_admin);
+        client.accept_admin_rotation(&new_admin);
+
+        // Offering should still be accessible after rotation
+        let offering = client.get_offering(&issuer, &symbol_short!("def"), &token);
+        assert_eq!(offering.revenue_share_bps, 1_000);
+    }
+
+    #[test]
+    fn old_admin_has_no_authority_after_rotation() {
+        let (env, client, _old_admin) = rotation_setup();
+        let new_admin = Address::generate(&env);
+
+        client.propose_admin_rotation(&new_admin);
+        client.accept_admin_rotation(&new_admin);
+
+        // get_admin must return new_admin, not old
+        assert_eq!(client.get_admin(), Some(new_admin));
+    }
+
+    #[test]
+    fn propose_after_full_rotation_cycle_succeeds() {
+        let (env, client, _admin) = rotation_setup();
+        let admin2 = Address::generate(&env);
+        let admin3 = Address::generate(&env);
+
+        client.propose_admin_rotation(&admin2);
+        client.accept_admin_rotation(&admin2);
+
+        // admin2 is now admin; propose again
+        let result = client.try_propose_admin_rotation(&admin3);
+        assert!(result.is_ok());
+    }
+}
+
+// ── Integration ───────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod admin_rotation_integration {
+    use super::*;
+
+    #[test]
+    fn new_admin_can_freeze_after_rotation() {
+        let (env, client, _admin) = rotation_setup();
+        let new_admin = Address::generate(&env);
+
+        client.propose_admin_rotation(&new_admin);
+        client.accept_admin_rotation(&new_admin);
+
+        // new admin should be able to freeze (admin-gated)
+        let result = client.try_freeze();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn five_admin_chain_rotation() {
+        let (env, client, _admin) = rotation_setup();
+        let admins: Vec<Address> = (0..5).map(|_| Address::generate(&env)).collect();
+
+        for next in &admins {
+            client.propose_admin_rotation(next);
+            client.accept_admin_rotation(next);
+        }
+
+        assert_eq!(client.get_admin(), Some(admins[4].clone()));
+        assert_eq!(client.get_pending_admin_rotation(), None);
+    }
+
+    #[test]
+    fn rotation_coexists_with_blacklist_state() {
+        let (env, client, admin) = rotation_setup();
+        let issuer = admin.clone();
+        let token = Address::generate(&env);
+        let payout_asset = Address::generate(&env);
+        let investor = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+
+        client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+        client.blacklist_add(&issuer, &issuer, &symbol_short!("def"), &token, &investor);
+
+        client.propose_admin_rotation(&new_admin);
+        client.accept_admin_rotation(&new_admin);
+
+        // Blacklist state must be unaffected
+        assert!(client.is_blacklisted(&issuer, &symbol_short!("def"), &token, &investor));
+    }
+}
+
+// ── Regression ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod admin_rotation_regression {
+    use super::*;
+
+    /// RC26Q2-C19 invariant: AdminRotationSameAddress — self-rotation always rejected.
+    #[test]
+    fn same_address_rotation_always_rejected() {
+        let (_env, client, admin) = rotation_setup();
+
+        let result = client.try_propose_admin_rotation(&admin);
+        assert_eq!(result, Err(Ok(RevoraError::AdminRotationSameAddress)));
+    }
+
+    /// RC26Q2-C19 invariant: AdminRotationPending — two rotations cannot be active simultaneously.
+    #[test]
+    fn two_concurrent_rotations_rejected() {
+        let (env, client, _admin) = rotation_setup();
+        let candidate_a = Address::generate(&env);
+        let candidate_b = Address::generate(&env);
+
+        client.propose_admin_rotation(&candidate_a);
+
+        let result = client.try_propose_admin_rotation(&candidate_b);
+        assert_eq!(result, Err(Ok(RevoraError::AdminRotationPending)));
+    }
+
+    /// Double-accept: second accept after rotation is complete must fail.
+    #[test]
+    fn double_accept_fails_after_rotation_complete() {
+        let (env, client, _admin) = rotation_setup();
+        let new_admin = Address::generate(&env);
+
+        client.propose_admin_rotation(&new_admin);
+        client.accept_admin_rotation(&new_admin);
+
+        // PendingAdmin is gone; second accept must fail
+        let result = client.try_accept_admin_rotation(&new_admin);
+        assert_eq!(result, Err(Ok(RevoraError::NoAdminRotationPending)));
+    }
+
+    /// Stale cancel: cancel after rotation already accepted must fail.
+    #[test]
+    fn stale_cancel_after_accept_fails() {
+        let (env, client, _admin) = rotation_setup();
+        let new_admin = Address::generate(&env);
+
+        client.propose_admin_rotation(&new_admin);
+        client.accept_admin_rotation(&new_admin);
+
+        let result = client.try_cancel_admin_rotation();
+        assert_eq!(result, Err(Ok(RevoraError::NoAdminRotationPending)));
+    }
+
+    /// Frozen contract blocks propose.
+    #[test]
+    fn frozen_contract_blocks_propose() {
+        let (env, client, _admin) = rotation_setup();
+        let new_admin = Address::generate(&env);
+
+        client.freeze();
+
+        let result = client.try_propose_admin_rotation(&new_admin);
+        assert_eq!(result, Err(Ok(RevoraError::ContractFrozen)));
+    }
+
+    /// Frozen contract blocks accept.
+    #[test]
+    fn frozen_contract_blocks_accept() {
+        let (env, client, _admin) = rotation_setup();
+        let new_admin = Address::generate(&env);
+
+        client.propose_admin_rotation(&new_admin);
+        client.freeze();
+
+        let result = client.try_accept_admin_rotation(&new_admin);
+        assert_eq!(result, Err(Ok(RevoraError::ContractFrozen)));
+    }
+
+    /// Frozen contract blocks cancel.
+    #[test]
+    fn frozen_contract_blocks_cancel() {
+        let (env, client, _admin) = rotation_setup();
+        let new_admin = Address::generate(&env);
+
+        client.propose_admin_rotation(&new_admin);
+        client.freeze();
+
+        let result = client.try_cancel_admin_rotation();
+        assert_eq!(result, Err(Ok(RevoraError::ContractFrozen)));
+    }
+}
