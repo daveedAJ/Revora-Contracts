@@ -79,15 +79,15 @@ pub enum RevoraError {
     /// Multisig proposal has expired.
     ProposalExpired = 30,
     /// Cross-contract token transfer failed.
-    TransferFailed = 30,
+    TransferFailed = 31,
     /// Contract is already at the target version; no migration needed.
-    AlreadyAtTargetVersion = 31,
+    AlreadyAtTargetVersion = 32,
     /// Target version is lower than the current deployed version.
-    MigrationDowngradeNotAllowed = 32,
+    MigrationDowngradeNotAllowed = 33,
     /// Admin rotation failed: new admin cannot be the same as current.
-    AdminRotationSameAddress = 33,
+    AdminRotationSameAddress = 34,
     /// Admin rotation failed: another rotation is already pending.
-    AdminRotationPending = 34,
+    AdminRotationPending = 35,
 }
 
 // ── Event symbols ────────────────────────────────────────────
@@ -3245,6 +3245,55 @@ impl RevoraRevenueShare {
     ) -> Option<(Address, u32)> {
         let offering_id = OfferingId { issuer, namespace, token };
         env.storage().persistent().get(&DataKey::SnapshotHolder(offering_id, snapshot_ref, index))
+    }
+
+    /// Return a deterministic payload for security documentation synchronization.
+    /// Maps error names (as symbols) to their u32 discriminant values, and includes
+    /// schema versions for events and indexing.
+    pub fn get_security_doc_sync(env: Env) -> Map<Symbol, u32> {
+        let mut m = Map::new(&env);
+        m.set(symbol_short!("ver"), CONTRACT_VERSION);
+        m.set(symbol_short!("ev_sch"), EVENT_SCHEMA_VERSION);
+        m.set(symbol_short!("idx_sch"), INDEXER_EVENT_SCHEMA_VERSION);
+
+        // Error mapping
+        m.set(symbol_short!("err_sh_bps"), RevoraError::InvalidRevenueShareBps as u32);
+        m.set(symbol_short!("err_limit"), RevoraError::LimitReached as u32);
+        m.set(symbol_short!("err_conc"), RevoraError::ConcentrationLimitExceeded as u32);
+        m.set(symbol_short!("err_no_off"), RevoraError::OfferingNotFound as u32);
+        m.set(symbol_short!("err_dep"), RevoraError::PeriodAlreadyDeposited as u32);
+        m.set(symbol_short!("err_no_clm"), RevoraError::NoPendingClaims as u32);
+        m.set(symbol_short!("err_bl"), RevoraError::HolderBlacklisted as u32);
+        m.set(symbol_short!("err_ish_bps"), RevoraError::InvalidShareBps as u32);
+        m.set(symbol_short!("err_ptm"), RevoraError::PaymentTokenMismatch as u32);
+        m.set(symbol_short!("err_frz"), RevoraError::ContractFrozen as u32);
+        m.set(symbol_short!("err_dly"), RevoraError::ClaimDelayNotElapsed as u32);
+        m.set(symbol_short!("err_snap_e"), RevoraError::SnapshotNotEnabled as u32);
+        m.set(symbol_short!("err_snap_o"), RevoraError::OutdatedSnapshot as u32);
+        m.set(symbol_short!("err_asset"), RevoraError::PayoutAssetMismatch as u32);
+        m.set(symbol_short!("err_tx_p"), RevoraError::IssuerTransferPending as u32);
+        m.set(symbol_short!("err_tx_n"), RevoraError::NoTransferPending as u32);
+        m.set(symbol_short!("err_tx_u"), RevoraError::UnauthorizedTransferAccept as u32);
+        m.set(symbol_short!("err_meta_l"), RevoraError::MetadataTooLarge as u32);
+        m.set(symbol_short!("err_auth"), RevoraError::NotAuthorized as u32);
+        m.set(symbol_short!("err_init"), RevoraError::NotInitialized as u32);
+        m.set(symbol_short!("err_amt"), RevoraError::InvalidAmount as u32);
+        m.set(symbol_short!("err_per"), RevoraError::InvalidPeriodId as u32);
+        m.set(symbol_short!("err_cap"), RevoraError::SupplyCapExceeded as u32);
+        m.set(symbol_short!("err_meta_f"), RevoraError::MetadataInvalidFormat as u32);
+        m.set(symbol_short!("err_win_r"), RevoraError::ReportingWindowClosed as u32);
+        m.set(symbol_short!("err_win_c"), RevoraError::ClaimWindowClosed as u32);
+        m.set(symbol_short!("err_sig_e"), RevoraError::SignatureExpired as u32);
+        m.set(symbol_short!("err_sig_r"), RevoraError::SignatureReplay as u32);
+        m.set(symbol_short!("err_sig_k"), RevoraError::SignerKeyNotRegistered as u32);
+        m.set(symbol_short!("err_prop"), RevoraError::ProposalExpired as u32);
+        m.set(symbol_short!("err_xfer"), RevoraError::TransferFailed as u32);
+        m.set(symbol_short!("err_ver"), RevoraError::AlreadyAtTargetVersion as u32);
+        m.set(symbol_short!("err_mig"), RevoraError::MigrationDowngradeNotAllowed as u32);
+        m.set(symbol_short!("err_rot_s"), RevoraError::AdminRotationSameAddress as u32);
+        m.set(symbol_short!("err_rot_p"), RevoraError::AdminRotationPending as u32);
+
+        m
     }
 }
 
