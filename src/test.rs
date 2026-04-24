@@ -3983,7 +3983,7 @@ fn multisig_setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address
     let client = RevoraRevenueShareClient::new(&env, &contract_id);
 
     let caller = Address::generate(&env);
-    let issuer = caller.clone();
+    client.initialize(&caller, &None::<Address>, &None::<bool>);
 
     let owner1 = Address::generate(&env);
     let owner2 = Address::generate(&env);
@@ -4096,7 +4096,7 @@ fn multisig_non_owner_cannot_propose() {
 
 #[test]
 fn multisig_approve_action_records_approval_and_emits_event() {
-    let (env, client, owner1, owner2, owner3, _caller) = multisig_setup();
+    let (env, client, owner1, owner2, _owner3, _caller) = multisig_setup();
 
     let proposal_id = client.propose_action(&owner1, &ProposalAction::Freeze);
     let before = legacy_events(&env).len();
@@ -4104,22 +4104,47 @@ fn multisig_approve_action_records_approval_and_emits_event() {
     assert!(legacy_events(&env).len() > before);
 
     let proposal = client.get_proposal(&proposal_id).unwrap();
-    assert_eq!(proposal.approvals.len(), 1);
-    assert_eq!(proposal.approvals.get(0).unwrap(), owner3);
+    assert_eq!(proposal.approvals.len(), 2);
+    assert_eq!(proposal.approvals.get(0).unwrap(), owner1);
+    assert_eq!(proposal.approvals.get(1).unwrap(), owner2);
 }
 
 #[test]
-fn multisig_duplicate_approval_is_idempotent() {
+fn multisig_duplicate_approval_returns_already_approved() {
     let (_env, client, owner1, _owner2, _owner3, _caller) = multisig_setup();
 
     let proposal_id = client.propose_action(&owner1, &ProposalAction::Freeze);
-    // owner1 already approved (auto-approval from propose)
-    // Approving again should be a no-op (not an error, not a duplicate entry)
-    client.approve_action(&owner1, &proposal_id);
+    let r = client.try_approve_action(&owner1, &proposal_id);
+    assert!(matches!(r.err(), Some(Ok(RevoraError::AlreadyApproved))));
 
     let proposal = client.get_proposal(&proposal_id).unwrap();
-    // Still only 1 approval (no duplicate)
     assert_eq!(proposal.approvals.len(), 1);
+}
+
+#[test]
+fn multisig_duplicate_second_owner_approval_returns_already_approved() {
+    let (_env, client, owner1, owner2, _owner3, _caller) = multisig_setup();
+
+    let proposal_id = client.propose_action(&owner1, &ProposalAction::Freeze);
+    client.approve_action(&owner2, &proposal_id);
+
+    let r = client.try_approve_action(&owner2, &proposal_id);
+    assert!(matches!(r.err(), Some(Ok(RevoraError::AlreadyApproved))));
+
+    let proposal = client.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.approvals.len(), 2);
+}
+
+#[test]
+fn multisig_approve_fails_after_expiry_boundary() {
+    let (env, client, owner1, owner2, _owner3, _caller) = multisig_setup();
+
+    let proposal_id = client.propose_action(&owner1, &ProposalAction::Freeze);
+    let proposal = client.get_proposal(&proposal_id).unwrap();
+    env.ledger().with_mut(|li| li.timestamp = proposal.expiry);
+
+    let r = client.try_approve_action(&owner2, &proposal_id);
+    assert!(matches!(r.err(), Some(Ok(RevoraError::ProposalExpired))));
 }
 
 #[test]
@@ -4182,7 +4207,7 @@ fn multisig_execute_twice_fails() {
 
     // Second execution should fail
     let r = client.try_execute_action(&proposal_id);
-    assert!(r.is_err());
+    assert!(matches!(r.err(), Some(Ok(RevoraError::LimitReached))));
 }
 
 #[test]
@@ -4195,7 +4220,20 @@ fn multisig_approve_executed_proposal_fails() {
 
     // Approving an already-executed proposal should fail
     let r = client.try_approve_action(&owner3, &proposal_id);
-    assert!(r.is_err());
+    assert!(matches!(r.err(), Some(Ok(RevoraError::LimitReached))));
+}
+
+#[test]
+fn multisig_execute_fails_after_expiry_boundary() {
+    let (env, client, owner1, owner2, _owner3, _caller) = multisig_setup();
+
+    let proposal_id = client.propose_action(&owner1, &ProposalAction::Freeze);
+    client.approve_action(&owner2, &proposal_id);
+    let proposal = client.get_proposal(&proposal_id).unwrap();
+    env.ledger().with_mut(|li| li.timestamp = proposal.expiry);
+
+    let r = client.try_execute_action(&proposal_id);
+    assert!(matches!(r.err(), Some(Ok(RevoraError::ProposalExpired))));
 }
 
 #[test]
@@ -4220,6 +4258,47 @@ fn multisig_set_threshold_action_updates_threshold() {
     client.execute_action(&proposal_id);
 
     assert_eq!(client.get_multisig_threshold(), Some(3));
+}
+
+#[test]
+fn multisig_threshold_one_executes_with_proposer_only() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+
+    let caller = Address::generate(&env);
+    client.initialize(&caller, &None::<Address>, &None::<bool>);
+    let owner1 = Address::generate(&env);
+    let owner2 = Address::generate(&env);
+    let mut owners = Vec::new(&env);
+    owners.push_back(owner1.clone());
+    owners.push_back(owner2.clone());
+
+    client.init_multisig(&caller, &owners, &1, &86400);
+
+    let proposal_id = client.propose_action(&owner1, &ProposalAction::Freeze);
+    client.execute_action(&proposal_id);
+    assert!(client.is_frozen());
+}
+
+#[test]
+fn multisig_threshold_three_requires_third_approval() {
+    let (_env, client, owner1, owner2, owner3, _caller) = multisig_setup();
+
+    let set_threshold_id = client.propose_action(&owner1, &ProposalAction::SetThreshold(3));
+    client.approve_action(&owner2, &set_threshold_id);
+    client.execute_action(&set_threshold_id);
+    assert_eq!(client.get_multisig_threshold(), Some(3));
+
+    let freeze_id = client.propose_action(&owner1, &ProposalAction::Freeze);
+    client.approve_action(&owner2, &freeze_id);
+    let below = client.try_execute_action(&freeze_id);
+    assert!(matches!(below.err(), Some(Ok(RevoraError::LimitReached))));
+
+    client.approve_action(&owner3, &freeze_id);
+    client.execute_action(&freeze_id);
+    assert!(client.is_frozen());
 }
 
 #[test]
@@ -4312,9 +4391,10 @@ fn multisig_three_approvals_all_valid() {
     client.approve_action(&owner3, &proposal_id);
 
     let proposal = client.get_proposal(&proposal_id).unwrap();
-    assert_eq!(proposal.approvals.len(), 2);
+    assert_eq!(proposal.approvals.len(), 3);
     assert_eq!(proposal.approvals.get(0).unwrap(), owner1);
     assert_eq!(proposal.approvals.get(1).unwrap(), owner2);
+    assert_eq!(proposal.approvals.get(2).unwrap(), owner3);
     client.execute_action(&proposal_id);
     assert!(client.is_frozen());
 }
