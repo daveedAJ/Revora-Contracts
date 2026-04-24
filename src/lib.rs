@@ -2457,6 +2457,10 @@ impl RevoraRevenueShare {
         }
 
         if !Self::is_event_only(&env) {
+            env.storage().persistent().set(
+                &DataKey::CurrentConcentration(offering_id.clone()),
+                &concentration_bps,
+            );
             env.events().publish(
                 (EVENT_CONCENTRATION_REPORTED, issuer, namespace, token),
                 concentration_bps,
