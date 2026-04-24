@@ -58,7 +58,6 @@ pub struct AuditSummary {
 ```
 
 ### `reconcile_audit_summary(issuer, namespace, token) → AuditReconciliationResult`
-
 Read-only. Compares the stored `AuditSummary` against the authoritative `RevenueReports` map.
 
 ```rust
