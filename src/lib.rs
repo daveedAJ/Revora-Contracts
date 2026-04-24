@@ -1,6 +1,37 @@
 #![no_std]
 #![deny(unsafe_code)]
-#![deny(clippy::dbg_macro, clippy::todo, clippy::unimplemented)]
+// ── Clippy deny gates ────────────────────────────────────────────────────────
+// These mirror the CI gate: `cargo clippy --all-targets --all-features -- -D warnings`
+// Any lint listed here will cause a *compile error* locally and in CI, making
+// quality regressions impossible to merge silently.
+//
+// Rationale for each group:
+//   clippy::dbg_macro          — debug output must never reach production WASM
+//   clippy::todo               — incomplete code paths are a security risk in a
+//                                financial contract; all paths must be explicit
+//   clippy::unimplemented      — same rationale as todo
+//   clippy::panic              — panics in no_std WASM abort the host; every
+//                                failure must return a typed RevoraError instead
+//   clippy::unwrap_used        — unwrap() in contract code hides error paths;
+//                                use .ok_or(RevoraError::...) or explicit match
+//   clippy::expect_used        — same rationale as unwrap_used
+//   clippy::wildcard_imports   — explicit imports keep the public API surface
+//                                auditable and prevent accidental re-exports
+//   clippy::manual_let_else    — prefer let-else for early-return clarity
+//
+// NOTE: #[allow(clippy::too_many_arguments)] is used on specific public entry
+// points where the Soroban ABI requires all parameters to be explicit.  This is
+// intentional and reviewed per-function, not suppressed globally.
+#![deny(
+    clippy::dbg_macro,
+    clippy::todo,
+    clippy::unimplemented,
+    clippy::panic,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::wildcard_imports,
+    clippy::manual_let_else
+)]
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, xdr::ToXdr, Address,
     BytesN, Env, IntoVal, Map, String, Symbol, Vec,

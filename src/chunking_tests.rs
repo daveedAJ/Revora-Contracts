@@ -1,5 +1,7 @@
 #![cfg(test)]
-#![allow(dead_code, unused_variables, unused_imports)]
+// `make_client` and `setup` are shared helpers; not every test uses every helper.
+// Suppress only dead_code for helpers, not all warnings globally.
+#![allow(dead_code)]
 
 use crate::{RevoraRevenueShare, RevoraRevenueShareClient};
 use soroban_sdk::{symbol_short, testutils::Address as _, token, Address, Env, Vec};
