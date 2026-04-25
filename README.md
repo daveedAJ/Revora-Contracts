@@ -49,18 +49,52 @@ Soroban contract for revenue-share offerings and blacklist management.
 
 ### Error codes (RevoraError)
 
-| Code | Name | Meaning |
-|------|------|---------|
-| 1 | `InvalidRevenueShareBps` | `revenue_share_bps` > 10000. |
-| 2 | `LimitReached` | Reserved / offering not found (e.g. for set_concentration_limit, set_rounding_mode). |
-| 3 | `ConcentrationLimitExceeded` | Holder concentration exceeds configured limit and enforcement is on; `report_revenue` rejected. |
-| 12 | `IssuerTransferPending` | A transfer is already pending for this offering. |
-| 13 | `NoTransferPending` | No transfer is pending for this offering (accept/cancel failed). |
-| 14 | `UnauthorizedTransferAccept` | Caller is not authorized to accept this transfer. |
-| 17 | `InvalidAmount` | Amount is invalid (e.g. negative, or zero for deposit) (#35). |
-| 18 | `InvalidPeriodId` | period_id is 0 where a positive value is required (#35). |
+Off-chain Stellar/Horizon clients receive errors as a `u32` in the contract result XDR. The variant name is **not** transmitted on the wire — only the number. These values are **frozen**: changing a number is a breaking change requiring a `CONTRACT_VERSION` bump.
 
-Auth failures (e.g. wrong signer) are signaled by host/panic, not `RevoraError`. Use `try_register_offering`, `try_report_revenue`, and similar `try_*` client methods to receive contract errors as `Result`.
+> **v5 migration note:** Prior to v5, `ProposalExpired` and `TransferFailed` both had wire value `30` (duplicate discriminant bug). In v5, `TransferFailed` was renumbered to `31`. Integrators that hard-coded `30` for `TransferFailed` must update to `31`. `ProposalExpired` remains `30`.
+
+| Code | Variant | Meaning | Since |
+|------|---------|---------|-------|
+| 1  | `InvalidRevenueShareBps`     | `revenue_share_bps` > 10000. | v1 |
+| 2  | `LimitReached`               | Generic limit guard (threshold out of range, offering limit, etc.). | v1 |
+| 3  | `ConcentrationLimitExceeded` | Holder concentration exceeds configured limit and enforcement is on. | v1 |
+| 4  | `OfferingNotFound`           | No offering found for the given (issuer, token) pair. | v1 |
+| 5  | `PeriodAlreadyDeposited`     | Revenue already deposited for this period. | v1 |
+| 6  | `NoPendingClaims`            | No unclaimed periods for this holder. | v1 |
+| 7  | `HolderBlacklisted`          | Holder is blacklisted for this offering. | v1 |
+| 8  | `InvalidShareBps`            | `share_bps` > 10000. | v1 |
+| 9  | `PaymentTokenMismatch`       | Payment token does not match the token set on first deposit. | v1 |
+| 10 | `ContractFrozen`             | Contract is frozen; state-changing operations are disabled. | v1 |
+| 11 | `ClaimDelayNotElapsed`       | Revenue not yet claimable (claim delay not elapsed). | v1 |
+| 12 | `SnapshotNotEnabled`         | Snapshot distribution is not enabled for this offering. | v2 |
+| 13 | `OutdatedSnapshot`           | Snapshot reference is outdated or duplicates a previous one. | v2 |
+| 14 | `PayoutAssetMismatch`        | Payout asset does not match expected asset. | v2 |
+| 15 | `IssuerTransferPending`      | A transfer is already pending for this offering. | v2 |
+| 16 | `NoTransferPending`          | No transfer is pending (accept/cancel failed). | v2 |
+| 17 | `UnauthorizedTransferAccept` | Caller is not the proposed new issuer. | v2 |
+| 18 | `MetadataTooLarge`           | Metadata string exceeds maximum allowed length. | v2 |
+| 19 | `NotAuthorized`              | Caller is not authorized to perform this action. | v1 |
+| 20 | `NotInitialized`             | Contract is not initialized (admin not set). | v2 |
+| 21 | `InvalidAmount`              | Amount is invalid (e.g. negative, or zero for deposit). | v2 |
+| 22 | `InvalidPeriodId`            | `period_id` is 0 where a positive value is required. | v2 |
+| 23 | `SupplyCapExceeded`          | Deposit would exceed the offering's supply cap. | v3 |
+| 24 | `MetadataInvalidFormat`      | Metadata format is invalid for configured scheme rules. | v3 |
+| 25 | `ReportingWindowClosed`      | Current timestamp is outside the configured reporting window. | v3 |
+| 26 | `ClaimWindowClosed`          | Current timestamp is outside the configured claiming window. | v3 |
+| 27 | `SignatureExpired`           | Off-chain signature has expired. | v3 |
+| 28 | `SignatureReplay`            | Signature nonce has already been used. | v3 |
+| 29 | `SignerKeyNotRegistered`     | Off-chain signer key has not been registered. | v3 |
+| 30 | `ProposalExpired`            | Multisig proposal has expired. | v4 |
+| 31 | `TransferFailed`             | Cross-contract token transfer failed. **Was 30 (duplicate) in v1–v4; renumbered in v5.** | v5 |
+| 32 | `AlreadyAtTargetVersion`     | Contract is already at the target version; no migration needed. | v4 |
+| 33 | `MigrationDowngradeNotAllowed` | Target version is lower than the current deployed version. | v4 |
+| 34 | `AdminRotationSameAddress`   | New admin cannot be the same as current admin. | v4 |
+| 35 | `AdminRotationPending`       | Another admin rotation is already pending. | v5 |
+| 36 | `NoAdminRotationPending`     | No admin rotation is pending (accept/cancel failed). | v5 |
+| 37 | `BlacklistSizeLimitExceeded` | Blacklist is at capacity; remove an entry before adding. | v5 |
+| 38 | `UnauthorizedRotationAccept` | Caller is not the proposed new admin. | v5 |
+
+Auth failures (wrong signer) are signaled by host panic, not `RevoraError`. Use `try_*` client methods to receive contract errors as `Result`.
 
 ### Events
 
