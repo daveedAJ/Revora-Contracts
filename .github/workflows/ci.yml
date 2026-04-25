@@ -43,6 +43,11 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      - name: Pin base64ct
+        run: |
+          cargo generate-lockfile
+          cargo update -p base64ct --precise 1.6.0 || true
+
       - name: Check formatting
         run: cargo fmt --all -- --check || (cargo fmt --all && echo "FORMAT_FIXED=true" >> $GITHUB_ENV)
 
