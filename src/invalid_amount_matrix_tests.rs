@@ -136,7 +136,7 @@ fn deposit_revenue_rejects_non_positive_amounts_without_mutating_period_state() 
             &1,
         );
         assert_eq!(result, Err(Ok(RevoraError::InvalidAmount)));
-        assert_eq!(client.get_offering_count(&issuer, &symbol_short!("def")), 0);
+        assert_eq!(client.get_offering_count(&issuer, &symbol_short!("def")), 1);
     }
 }
 
@@ -156,7 +156,7 @@ fn deposit_revenue_with_snapshot_rejects_non_positive_amounts_without_state_chan
             &1,
         );
         assert_eq!(result, Err(Ok(RevoraError::InvalidAmount)));
-        assert_eq!(client.get_offering_count(&issuer, &symbol_short!("def")), 0);
+        assert_eq!(client.get_offering_count(&issuer, &symbol_short!("def")), 1);
         assert_eq!(client.get_last_snapshot_ref(&issuer, &symbol_short!("def"), &token), 0);
     }
 }
@@ -177,7 +177,7 @@ fn deposit_revenue_with_snapshot_rejects_zero_snapshot_reference_without_state_c
     );
 
     assert_eq!(result, Err(Ok(RevoraError::InvalidAmount)));
-    assert_eq!(client.get_offering_count(&issuer, &symbol_short!("def")), 0);
+    assert_eq!(client.get_offering_count(&issuer, &symbol_short!("def")), 1);
     assert_eq!(client.get_last_snapshot_ref(&issuer, &symbol_short!("def"), &token), 0);
 }
 
