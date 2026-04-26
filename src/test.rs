@@ -5141,6 +5141,167 @@ fn multisig_remove_owner_that_would_break_threshold_fails() {
     assert!(r.is_err());
 }
 
+/// Regression Test: RemoveOwner non-existent address is rejected
+///
+/// **Related Issue:** #296
+///
+/// **Original Bug:** `!owners.contains(&addr)` used undefined `addr` instead of `old_owner`,
+/// causing a compile error and preventing the guard from working.
+///
+/// **Expected Behavior:** Attempting to remove an address that is not an owner returns an error.
+///
+/// **Fix Applied:** Changed `&addr` to `&old_owner` in the RemoveOwner branch.
+#[test]
+fn multisig_remove_nonexistent_owner_fails() {
+    let (env, client, owner1, owner2, _owner3, _caller) = multisig_setup();
+    let outsider = Address::generate(&env);
+
+    let proposal_id =
+        client.propose_action(&owner1, &ProposalAction::RemoveOwner(outsider.clone()));
+    client.approve_action(&owner2, &proposal_id);
+    let r = client.try_execute_action(&proposal_id);
+    assert!(r.is_err());
+    // Owners unchanged
+    assert_eq!(client.get_multisig_owners().len(), 3);
+}
+
+/// Regression Test: RemoveOwner at exact threshold boundary (owners == threshold after removal)
+///
+/// **Related Issue:** #296
+///
+/// **Original Bug:** Threshold invariant check used undefined `addr`; the guard was unreachable.
+///
+/// **Expected Behavior:** Removing an owner is allowed when remaining owners == threshold
+/// (e.g. 3 owners, threshold=2 → remove one → 2 owners == threshold=2 is valid).
+///
+/// **Fix Applied:** Corrected the `contains` check and the immutable `owners` assignment.
+#[test]
+fn multisig_remove_owner_exact_threshold_boundary_succeeds() {
+    // 3 owners, threshold=2. After removing one: 2 owners == threshold=2. Must succeed.
+    let (_env, client, owner1, owner2, owner3, _caller) = multisig_setup();
+
+    let proposal_id = client.propose_action(&owner1, &ProposalAction::RemoveOwner(owner3.clone()));
+    client.approve_action(&owner2, &proposal_id);
+    client.execute_action(&proposal_id);
+
+    assert_eq!(client.get_multisig_owners().len(), 2);
+    assert_eq!(client.get_multisig_threshold(), Some(2));
+}
+
+/// Regression Test: RemoveOwner below threshold is rejected (griefing protection)
+///
+/// **Related Issue:** #296
+///
+/// **Original Bug:** The threshold invariant guard referenced undefined `addr`, so the check
+/// never ran and a removal that would brick the multisig could succeed.
+///
+/// **Expected Behavior:** Removing an owner when remaining owners < threshold must fail,
+/// preventing the multisig from being bricked.
+///
+/// **Fix Applied:** Corrected the guard to use `old_owner` and fixed the immutable binding.
+#[test]
+fn multisig_remove_owner_below_threshold_is_rejected() {
+    // 3 owners, threshold=2. Remove two owners sequentially; second removal must fail.
+    let (_env, client, owner1, owner2, owner3, _caller) = multisig_setup();
+
+    // First removal: 3→2 owners, threshold=2 — valid.
+    let p1 = client.propose_action(&owner1, &ProposalAction::RemoveOwner(owner3.clone()));
+    client.approve_action(&owner2, &p1);
+    client.execute_action(&p1);
+    assert_eq!(client.get_multisig_owners().len(), 2);
+
+    // Second removal: 2→1 owners, threshold=2 — must fail (1 < 2).
+    let p2 = client.propose_action(&owner1, &ProposalAction::RemoveOwner(owner2.clone()));
+    client.approve_action(&owner2, &p2);
+    let r = client.try_execute_action(&p2);
+    assert!(r.is_err());
+    // Owners still 2
+    assert_eq!(client.get_multisig_owners().len(), 2);
+}
+
+/// Regression Test: Proposer of an active proposal can be removed without bricking pending proposals
+///
+/// **Related Issue:** #296
+///
+/// **Expected Behavior:** Removing the proposer of a pending (unexecuted) proposal does not
+/// retroactively invalidate that proposal; the remaining owners can still execute it if threshold
+/// is met. The removed owner's prior approval counts.
+#[test]
+fn multisig_remove_proposer_pending_proposal_still_executable() {
+    // 3 owners, threshold=2. owner1 proposes Freeze. Then owner1 is removed.
+    // owner2 already approved the Freeze proposal (auto-approval by proposer counts).
+    // After removal, owner2 approves → threshold met → execute succeeds.
+    let (_env, client, owner1, owner2, owner3, _caller) = multisig_setup();
+
+    // owner1 proposes Freeze (auto-approved by owner1)
+    let freeze_id = client.propose_action(&owner1, &ProposalAction::Freeze);
+
+    // Now remove owner1 (owner2 + owner3 approve the removal; threshold=2)
+    let remove_id =
+        client.propose_action(&owner2, &ProposalAction::RemoveOwner(owner1.clone()));
+    client.approve_action(&owner3, &remove_id);
+    client.execute_action(&remove_id);
+    assert_eq!(client.get_multisig_owners().len(), 2);
+
+    // The Freeze proposal was proposed by owner1 (now removed) but owner1's approval still
+    // counts. owner2 approves → 2 approvals (owner1 + owner2) == threshold=2 → executable.
+    client.approve_action(&owner2, &freeze_id);
+    client.execute_action(&freeze_id);
+    assert!(client.is_frozen());
+}
+
+/// Regression Test: Last approver of a pending proposal can be removed, blocking execution
+///
+/// **Related Issue:** #296
+///
+/// **Expected Behavior:** If the only approver of a proposal is removed, the approval count
+/// drops below threshold and the proposal can no longer be executed (griefing protection).
+/// A new proposal must be created.
+#[test]
+fn multisig_remove_last_approver_blocks_execution() {
+    // 3 owners, threshold=2. owner1 proposes Freeze (1 approval). owner2 is removed before
+    // approving. Now only owner1 approved → 1 < threshold=2 → execute fails.
+    let (_env, client, owner1, owner2, owner3, _caller) = multisig_setup();
+
+    // owner1 proposes Freeze (auto-approved by owner1 only)
+    let freeze_id = client.propose_action(&owner1, &ProposalAction::Freeze);
+
+    // Remove owner2 before they approve the Freeze (owner1 + owner3 approve removal)
+    let remove_id =
+        client.propose_action(&owner1, &ProposalAction::RemoveOwner(owner2.clone()));
+    client.approve_action(&owner3, &remove_id);
+    client.execute_action(&remove_id);
+    assert_eq!(client.get_multisig_owners().len(), 2);
+
+    // Freeze proposal still has only 1 approval (owner1); threshold=2 → must fail.
+    let r = client.try_execute_action(&freeze_id);
+    assert!(r.is_err());
+    assert!(!client.is_frozen());
+}
+
+/// Regression Test: Owner can propose their own removal (self-removal)
+///
+/// **Related Issue:** #296
+///
+/// **Expected Behavior:** An owner may propose their own removal. The proposal requires
+/// threshold approvals from other owners to execute. After execution the owner is gone.
+#[test]
+fn multisig_owner_self_removal_succeeds_with_threshold() {
+    // owner1 proposes removing themselves. owner2 approves → threshold=2 met → executes.
+    let (_env, client, owner1, owner2, _owner3, _caller) = multisig_setup();
+
+    let proposal_id =
+        client.propose_action(&owner1, &ProposalAction::RemoveOwner(owner1.clone()));
+    client.approve_action(&owner2, &proposal_id);
+    client.execute_action(&proposal_id);
+
+    let owners = client.get_multisig_owners();
+    assert_eq!(owners.len(), 2);
+    for i in 0..owners.len() {
+        assert_ne!(owners.get(i).unwrap(), owner1);
+    }
+}
+
 #[test]
 fn multisig_freeze_disables_direct_freeze_function() {
     let (env, client, _owner1, _owner2, _owner3, _caller) = multisig_setup();
