@@ -206,6 +206,32 @@ Use `try_*` client methods to receive these errors as `Result`.
 
 ---
 
+## Local Development & Quality Gates
+
+These are the **exact** commands CI runs. Run them locally before every push.
+
+```bash
+# 1. Format check — must produce no diff
+cargo fmt --all -- --check
+
+# 2. Clippy — every warning is a hard error
+cargo clippy --all-targets --all-features -- -D warnings
+
+# 3. Build
+cargo build --release
+
+# 4. Tests — single-threaded for deterministic Soroban output
+cargo test -- --test-threads=1
+```
+
+All four checks must pass before a PR can be merged. The CI pipeline runs them as
+three sequential jobs (`fmt → clippy → test`) so failures are fast and readable.
+
+For the full rationale behind each lint gate, suppression policy, and security
+assumptions see [docs/clippy-format-gate-hardening.md](./docs/clippy-format-gate-hardening.md).
+
+---
+
 ## Architecture Deep Dive
 
 This section provides detailed explanations of the on-chain data model, core flows, and integration patterns for developers building on or integrating with Revora-Contracts.

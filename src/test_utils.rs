@@ -1,5 +1,7 @@
 #![cfg(test)]
-#![allow(warnings)] // Silences the unused variable errors failing the CI
+// `setup_context` returns several values; callers may not use all of them.
+// Suppress only the specific lint rather than silencing all warnings.
+#![allow(dead_code)]
 
 use crate::{RevoraRevenueShare, RevoraRevenueShareClient};
 use soroban_sdk::{
