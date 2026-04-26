@@ -90,6 +90,11 @@ pub enum RevoraError {
     AdminRotationPending = 34,
 }
 
+pub mod vesting;
+
+#[cfg(test)]
+mod vesting_test;
+
 // ── Event symbols ────────────────────────────────────────────
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
 const EVENT_BL_ADD: Symbol = symbol_short!("bl_add");
