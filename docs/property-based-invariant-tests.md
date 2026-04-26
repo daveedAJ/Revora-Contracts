@@ -12,7 +12,7 @@ Production-grade property-based testing using `proptest` to validate core invari
 | **No Double-Claims** | `LastClaimedIdx` prevents re-claiming | `proptest_random_operations`: Claims advance index |
 | **Blacklist Enforcement** | Blacklisted holder payout = 0 | `proptest_blacklist_enforcement`: 100% test coverage |
 | **Concentration Limits** | Enforced `max_bps` blocks reports | `proptest_concentration_limits`: Fail when exceeded |
-| **Pause/Freeze Safety** | Mutations blocked when `paused=true`/`frozen=true` | `proptest_state_transitions`: Ops panic post-pause |
+| **Pause/Freeze Safety** | Mutations blocked when `paused=true`/`frozen=true` | `prop_pause_safety`: Ops panic/fail post-pause |
 | **Pagination Determinism** | Stable order by registration index | `proptest_pagination_stability`: Register N → paginate exactly |
 | **Multisig Threshold** | Executions require ≥ threshold approvals | `proptest_multisig`: Below threshold → fail |
 
@@ -40,13 +40,15 @@ cargo test prop_period_ordering -- --exact 1  # Rerun specific case
 
 ## Test Architecture
 
-### Oracle: `check_invariants(client: &Client, issuers: &Vec<Address>)`
+### Oracle: `check_invariants_enhanced(client: &Client, issuers: &Vec<Address>)`
 ```rust
 // Enhanced oracle checks:
 assert!(total_claimed <= total_deposited);
 assert!(blacklisted_holder_claims == 0);
 assert!(periods strictly increasing);
-assert!(paused → no mutations);
+assert!(paused → mutations fail with error);
+assert!(concentration limits enforced);
+assert!(pagination deterministic);
 ```
 
 ### Strategies

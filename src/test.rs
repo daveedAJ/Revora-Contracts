@@ -5861,7 +5861,10 @@ fn check_invariants_enhanced(env: &Env, client: &RevoraRevenueShareClient, issue
 
             // 4. Pause state preserved
             if client.is_paused() {
-                // Mutations blocked
+                // Mutations should be blocked; verify by attempting a mutation
+                let dummy_token = Address::generate(env);
+                let result = client.try_register_offering(&issuer, &ns, &dummy_token, &1000, &dummy_token, &0);
+                assert!(result.is_err(), "Mutations allowed when paused");
             }
 
             // 5. Concentration limit respected

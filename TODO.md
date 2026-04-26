@@ -4,10 +4,10 @@ Status: 0/6 Complete
 
 ## Breakdown from Approved Plan
 
-### 1. Enhance proptest_helpers.rs [ ]
-- [ ] Complete TestOperation enum/strategies (register/report/deposit/claim/blacklist/multisig/pause)
-- [ ] arb_valid_sequence generator (invariant-preserving sequences)
-- [ ] Validate: cargo test proptest_helpers
+### 1. Enhance proptest_helpers.rs [x]
+- [x] Complete TestOperation enum/strategies (register/report/deposit/claim/blacklist/multisig/pause)
+- [x] arb_valid_sequence generator (invariant-preserving sequences)
+- [x] Validate: cargo test proptest_helpers
 
 ### 2. Hardened src/test.rs Properties [x]
 - [x] check_invariants_enhanced oracle + 7 properties (period/pagination/blacklist/concentration/multisig/pause/random)
@@ -19,7 +19,7 @@ Status: 0/6 Complete
 - [x] prop_concentration_limits (enforce blocks)
 - [ ] prop_pagination_stability (deterministic register→paginate)
 - [ ] prop_multisig_threshold (below threshold fails)
-- [ ] prop_pause_safety (mutations panic post-pause)
+- [x] prop_pause_safety (mutations panic post-pause)
 - [ ] prop_random_operations (full sequences, seeds/shrinking)
 - [ ] Validate: cargo test prop_
 
