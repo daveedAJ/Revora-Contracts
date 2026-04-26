@@ -2476,6 +2476,40 @@ impl RevoraRevenueShare {
             .unwrap_or_else(|| Vec::new(&env))
     }
 
+    /// Return a page of blacklisted addresses for an offering.
+    /// Limit capped at MAX_PAGE_LIMIT (20).
+    pub fn get_blacklist_page(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        start: u32,
+        limit: u32,
+    ) -> (Vec<Address>, Option<u32>) {
+        let offering_id = OfferingId { issuer, namespace, token };
+        let order_key = DataKey::BlacklistOrder(offering_id);
+        let all: Vec<Address> = env.storage()
+            .persistent()
+            .get::<DataKey, Vec<Address>>(&order_key)
+            .unwrap_or_else(|| Vec::new(&env));
+            
+        let count = all.len();
+        let effective_limit = if limit == 0 || limit > MAX_PAGE_LIMIT { MAX_PAGE_LIMIT } else { limit };
+
+        if start >= count {
+            return (Vec::new(&env), None);
+        }
+
+        let end = core::cmp::min(start + effective_limit, count);
+        let mut results = Vec::new(&env);
+        for i in start..end {
+            results.push_back(all.get(i).unwrap());
+        }
+
+        let next_cursor = if end < count { Some(end) } else { None };
+        (results, next_cursor)
+    }
+
     /// Return the current number of blacklisted addresses for an offering.
     ///
     /// This is a cheap O(1) read of the underlying map length and can be used
@@ -2644,6 +2678,41 @@ impl RevoraRevenueShare {
             .get::<DataKey, Map<Address, bool>>(&key)
             .map(|m| m.keys())
             .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    /// Return a page of whitelisted addresses for an offering.
+    /// Limit capped at MAX_PAGE_LIMIT (20).
+    pub fn get_whitelist_page(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        start: u32,
+        limit: u32,
+    ) -> (Vec<Address>, Option<u32>) {
+        let offering_id = OfferingId { issuer, namespace, token };
+        let key = DataKey::Whitelist(offering_id);
+        let all: Vec<Address> = env.storage()
+            .persistent()
+            .get::<DataKey, Map<Address, bool>>(&key)
+            .map(|m| m.keys())
+            .unwrap_or_else(|| Vec::new(&env));
+            
+        let count = all.len();
+        let effective_limit = if limit == 0 || limit > MAX_PAGE_LIMIT { MAX_PAGE_LIMIT } else { limit };
+
+        if start >= count {
+            return (Vec::new(&env), None);
+        }
+
+        let end = core::cmp::min(start + effective_limit, count);
+        let mut results = Vec::new(&env);
+        for i in start..end {
+            results.push_back(all.get(i).unwrap());
+        }
+
+        let next_cursor = if end < count { Some(end) } else { None };
+        (results, next_cursor)
     }
 
     /// Returns `true` if whitelist enforcement is enabled for an offering.

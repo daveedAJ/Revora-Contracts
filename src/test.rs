@@ -5335,6 +5335,120 @@ fn continuous_invariants_deterministic_reproducible() {
     // Existing test preserved
 }
 
+#[test]
+fn test_offerings_pagination_stress() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let ns = symbol_short!("def");
+
+    let num_offerings = 45; // Test a number that spans multiple pages (20 + 20 + 5)
+    
+    for _ in 0..num_offerings {
+        let token = Address::generate(&env);
+        client.register_offering(&issuer, &ns, &token, &1000, &token, &0);
+    }
+
+    // 1. Verify MAX_PAGE_LIMIT enforcement
+    let (page_large, next_large) = client.get_offerings_page(&issuer, &ns, &0, &100);
+    assert_eq!(page_large.len(), 20, "Should cap at MAX_PAGE_LIMIT (20)");
+    assert_eq!(next_large, Some(20), "Next cursor should be 20");
+
+    let (page_zero, next_zero) = client.get_offerings_page(&issuer, &ns, &0, &0);
+    assert_eq!(page_zero.len(), 20, "Limit 0 should default to MAX_PAGE_LIMIT (20)");
+    
+    // 2. Full traversal
+    let mut all_offerings = Vec::new(&env);
+    let mut cursor = 0;
+    loop {
+        let (page, next) = client.get_offerings_page(&issuer, &ns, &cursor, &20);
+        for item in page {
+            all_offerings.push_back(item);
+        }
+        if let Some(n) = next {
+            cursor = n;
+        } else {
+            break;
+        }
+    }
+    assert_eq!(all_offerings.len(), num_offerings, "Should retrieve all offerings");
+}
+
+#[test]
+fn test_blacklist_pagination_stress() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let ns = symbol_short!("def");
+    let token = Address::generate(&env);
+
+    client.register_offering(&issuer, &ns, &token, &1000, &token, &0);
+
+    let num_blacklisted = 45;
+    for _ in 0..num_blacklisted {
+        let investor = Address::generate(&env);
+        client.blacklist_add(&issuer, &issuer, &ns, &token, &investor);
+    }
+
+    // 1. Verify MAX_PAGE_LIMIT enforcement
+    let (page_large, next_large) = client.get_blacklist_page(&issuer, &ns, &token, &0, &100);
+    assert_eq!(page_large.len(), 20, "Should cap at MAX_PAGE_LIMIT (20)");
+    assert_eq!(next_large, Some(20), "Next cursor should be 20");
+
+    // 2. Full traversal
+    let mut total_retrieved = 0;
+    let mut cursor = 0;
+    loop {
+        let (page, next) = client.get_blacklist_page(&issuer, &ns, &token, &cursor, &20);
+        total_retrieved += page.len();
+        if let Some(n) = next {
+            cursor = n;
+        } else {
+            break;
+        }
+    }
+    assert_eq!(total_retrieved, num_blacklisted, "Should retrieve all blacklisted addresses");
+}
+
+#[test]
+fn test_whitelist_pagination_stress() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let ns = symbol_short!("def");
+    let token = Address::generate(&env);
+
+    client.register_offering(&issuer, &ns, &token, &1000, &token, &0);
+
+    let num_whitelisted = 45;
+    for _ in 0..num_whitelisted {
+        let investor = Address::generate(&env);
+        client.whitelist_add(&issuer, &issuer, &ns, &token, &investor);
+    }
+
+    // 1. Verify MAX_PAGE_LIMIT enforcement
+    let (page_large, next_large) = client.get_whitelist_page(&issuer, &ns, &token, &0, &100);
+    assert_eq!(page_large.len(), 20, "Should cap at MAX_PAGE_LIMIT (20)");
+    assert_eq!(next_large, Some(20), "Next cursor should be 20");
+
+    // 2. Full traversal
+    let mut total_retrieved = 0;
+    let mut cursor = 0;
+    loop {
+        let (page, next) = client.get_whitelist_page(&issuer, &ns, &token, &cursor, &20);
+        total_retrieved += page.len();
+        if let Some(n) = next {
+            cursor = n;
+        } else {
+            break;
+        }
+    }
+    assert_eq!(total_retrieved, num_whitelisted, "Should retrieve all whitelisted addresses");
+}
+
 // ===========================================================================
 // On-chain revenue distribution calculation (#4)
 // ===========================================================================
