@@ -4549,9 +4549,48 @@ impl RevoraRevenueShare {
     }
 
     /// Read-only: compute claimable amount for a holder over a bounded index window.
-    /// Returns `(total, next_cursor)` where `next_cursor` is `Some(next_index)` if more
-    /// eligible periods exist after the processed window. `count` of 0 or > `MAX_CHUNK_PERIODS`
-    /// will be capped to `MAX_CHUNK_PERIODS` to enforce limits.
+    ///
+    /// This function allows indexers, frontends, and reviewers to page through a holder's
+    /// currently claimable revenue without mutating contract state. It is the chunked companion
+    /// to `get_claimable`.
+    ///
+    /// # Arguments
+    ///
+    /// * `issuer` - The offering issuer address
+    /// * `namespace` - The offering namespace identifier
+    /// * `token` - The offering token address
+    /// * `holder` - The holder address to compute claimable amount for
+    /// * `start_idx` - The starting period index (cursor) for the chunk query
+    /// * `count` - The maximum number of periods to include in this chunk
+    ///
+    /// # Returns
+    ///
+    /// Returns `(total, next_cursor)` where:
+    /// - `total` is the sum of claimable amounts for the processed periods
+    /// - `next_cursor` is `Some(next_index)` if more eligible periods exist after the processed window,
+    ///   or `None` if all eligible periods have been processed
+    ///
+    /// # Behavior
+    ///
+    /// - Caller-provided cursors (`start_idx`) are clamped to the holder's stored `LastClaimedIdx`
+    /// - The first delayed period stops iteration and becomes the returned `next_cursor`
+    /// - A blacklisted holder receives `0` from this function
+    /// - A closed claim window also yields `0` from this function
+    /// - Chunk size `0` or any size above `MAX_CHUNK_PERIODS` (200) is normalized to `MAX_CHUNK_PERIODS`
+    /// - Holders with zero share receive `0` claimable amount
+    ///
+    /// # Security Guarantees
+    ///
+    /// This implementation is intentionally conservative: previews never advertise more value
+    /// than the holder could actually claim at the current ledger state.
+    ///
+    /// # Cursor Idempotency
+    ///
+    /// Repeated queries with the same cursor yield identical results, ensuring reliable pagination.
+    ///
+    /// # Chunk Summation Parity
+    ///
+    /// Summing chunked claimable amounts equals the full claimable amount obtainable via `get_claimable`.
     pub fn get_claimable_chunk(
         env: Env,
         issuer: Address,
