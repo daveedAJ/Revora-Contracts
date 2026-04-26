@@ -5132,20 +5132,55 @@ proptest! {
 
 /// Property: Concentration limits enforced.
 proptest! {
+    #![proptest_config(proptest::test_runner::Config { cases: 50, ..Default::default() })]
     #[test]
-    fn prop_concentration_limits(env in Env::default()) {
+    fn prop_concentration_limits(
+        env in Env::default(),
+        seq in arb_valid_operation_sequence(10),
+        enforce in any::<bool>(),
+        limit_bps in 1000u32..=5000,
+        conc_bps in 5001u32..=10_000,
+    ) {
         let client = make_client(&env);
         let issuer = Address::generate(&env);
         let ns = symbol_short!("def");
         let token = Address::generate(&env);
         
         client.register_offering(&issuer, &ns, &token, &1000, &token.clone(), &0);
-        client.set_concentration_limit(&issuer, &ns, &token.clone(), &5000, &true);
         
-        // Over limit → report_revenue fails
-        client.report_concentration(&issuer, &ns, &token.clone(), &6000);
-        let result = client.try_report_revenue(&issuer, &ns, &token, &token, &1000, &1, &false);
-        prop_assert!(result.is_err());
+        // Execute background sequence
+        for op in seq {
+            match op {
+                TestOperation::ReportRevenue { amount, period_id, override_existing } => {
+                    let _ = client.try_report_revenue(&issuer, &ns, &token, &token, &amount, &period_id, &override_existing);
+                }
+                TestOperation::SetConcentrationLimit { max_bps, enforce: e } => {
+                    let _ = client.try_set_concentration_limit(&issuer, &ns, &token, &max_bps, &e);
+                }
+                TestOperation::ReportConcentration { concentration_bps } => {
+                    let _ = client.try_report_concentration(&issuer, &ns, &token, &concentration_bps);
+                }
+                _ => {}
+            }
+        }
+        
+        // Set target configuration
+        client.set_concentration_limit(&issuer, &ns, &token.clone(), &limit_bps, &enforce);
+        
+        // Report concentration over limit
+        client.report_concentration(&issuer, &ns, &token.clone(), &conc_bps);
+        
+        // Use a definitely new period_id
+        let result = client.try_report_revenue(&issuer, &ns, &token, &token, &1000, &999_999, &false);
+        
+        if enforce {
+            prop_assert_eq!(result, Err(Ok(RevoraError::ConcentrationLimitExceeded)));
+        } else {
+            // If amount validation or other guards failed it might be another error, but ConcentrationLimitExceeded MUST NOT happen
+            if let Err(Ok(err)) = result {
+                prop_assert_ne!(err, RevoraError::ConcentrationLimitExceeded);
+            }
+        }
     }
 }
 
