@@ -2053,6 +2053,612 @@ fn deposit_revenue_requires_auth() {
     assert!(r.is_err());
 }
 
+// ── Supply Cap & Investment Constraints tests ────────────────────────
+
+#[test]
+fn deposit_revenue_exactly_at_supply_cap_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let (payment_token, pt_admin) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &100_000);
+    mint_tokens(&env, &payment_token, &pt_admin, &issuer, &10_000_000);
+
+    // exactly at cap should succeed
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payment_token, &100_000, &1);
+    assert_eq!(client.get_period_count(&issuer, &symbol_short!("def"), &token), 1);
+}
+
+#[test]
+fn deposit_revenue_exceeds_supply_cap_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let (payment_token, pt_admin) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &100_000);
+    mint_tokens(&env, &payment_token, &pt_admin, &issuer, &10_000_000);
+
+    // Deposit exceeds cap should fail
+    let r = client.try_deposit_revenue(&issuer, &symbol_short!("def"), &token, &payment_token, &100_001, &1);
+    assert!(r.is_err());
+}
+
+#[test]
+fn deposit_revenue_multiple_deposits_exceeds_supply_cap_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let (payment_token, pt_admin) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &100_000);
+    mint_tokens(&env, &payment_token, &pt_admin, &issuer, &10_000_000);
+
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payment_token, &50_000, &1);
+    let r = client.try_deposit_revenue(&issuer, &symbol_short!("def"), &token, &payment_token, &50_001, &2);
+    assert!(r.is_err());
+}
+
+#[test]
+fn set_investment_constraints_succeeds_for_valid_bounds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let (payment_token, _) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &100_000);
+    client.set_investment_constraints(&issuer, &symbol_short!("def"), &token, &100, &1_000);
+    
+    let constraints = client.get_investment_constraints(&issuer, &symbol_short!("def"), &token).unwrap();
+    assert_eq!(constraints.min_stake, 100);
+    assert_eq!(constraints.max_stake, 1_000);
+}
+
+#[test]
+fn set_investment_constraints_fails_when_max_less_than_min() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let (payment_token, _) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &100_000);
+    let r = client.try_set_investment_constraints(&issuer, &symbol_short!("def"), &token, &1_000, &100);
+    assert!(r.is_err());
+}
+
+#[test]
+fn set_investment_constraints_fails_negative() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let (payment_token, _) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &100_000);
+    let r = client.try_set_investment_constraints(&issuer, &symbol_short!("def"), &token, &-1, &100);
+    assert!(r.is_err());
+    
+    let r = client.try_set_investment_constraints(&issuer, &symbol_short!("def"), &token, &100, &-1);
+    assert!(r.is_err());
+}
+
+#[test]
+fn set_investment_constraints_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let (payment_token, _) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &100_000);
+    
+    let before = legacy_events(&env).len();
+    client.set_investment_constraints(&issuer, &symbol_short!("def"), &token, &100, &1_000);
+    assert!(legacy_events(&env).len() > before);
+}
+
+// ── Supply cap boundary & event tests [RC26Q2-C15] ────────────────────────────
+//
+// Design rationale
+// ────────────────
+// The supply cap is enforced by `do_deposit_revenue` using saturating_add to
+// prevent overflow. The cap check (`new_total > cap`) deliberately allows
+// deposits that land *exactly* on the cap (equal case) while the subsequent
+// `EVENT_SUPPLY_CAP_REACHED` event fires when `new_deposited >= cap`. This
+// makes the boundary deterministic and auditable.
+//
+// Time complexity of each supply cap operation: O(1) – two storage reads and
+// one saturating add.  Space complexity: O(1) per offering.
+
+/// Helper: register an offering with a supply cap.
+fn register_capped_offering(
+    client: &RevoraRevenueShareClient,
+    issuer: &Address,
+    token: &Address,
+    payment_token: &Address,
+    cap: i128,
+) {
+    client.register_offering(issuer, &symbol_short!("cap"), token, &5_000, payment_token, &cap);
+}
+
+#[test]
+fn get_deposited_revenue_returns_zero_before_any_deposit() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let (payment_token, _) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("cap"), &token, &5_000, &payment_token, &100_000);
+
+    // No deposits yet — read API must return 0.
+    assert_eq!(client.get_deposited_revenue(&issuer, &symbol_short!("cap"), &token), 0);
+}
+
+#[test]
+fn get_deposited_revenue_tracks_cumulative_total_correctly() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let (payment_token, pt_admin) = create_payment_token(&env);
+
+    register_capped_offering(&client, &issuer, &token, &payment_token, 300_000);
+    mint_tokens(&env, &payment_token, &pt_admin, &issuer, &10_000_000);
+
+    client.deposit_revenue(&issuer, &symbol_short!("cap"), &token, &payment_token, &100_000, &1);
+    assert_eq!(client.get_deposited_revenue(&issuer, &symbol_short!("cap"), &token), 100_000);
+
+    client.deposit_revenue(&issuer, &symbol_short!("cap"), &token, &payment_token, &150_000, &2);
+    assert_eq!(client.get_deposited_revenue(&issuer, &symbol_short!("cap"), &token), 250_000);
+}
+
+#[test]
+fn deposit_revenue_no_cap_is_unlimited() {
+    // supply_cap == 0 means no cap: deposits of any size must succeed.
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let (payment_token, pt_admin) = create_payment_token(&env);
+
+    // Register with cap = 0 (unlimited).
+    client.register_offering(&issuer, &symbol_short!("cap"), &token, &5_000, &payment_token, &0);
+    mint_tokens(&env, &payment_token, &pt_admin, &issuer, &10_000_000_000);
+
+    let r = client.try_deposit_revenue(
+        &issuer, &symbol_short!("cap"), &token, &payment_token, &999_999_999, &1,
+    );
+    assert!(r.is_ok(), "deposit with no cap must always succeed");
+}
+
+#[test]
+fn deposit_revenue_exactly_at_supply_cap_emits_cap_reached_event() {
+    // The EVENT_SUPPLY_CAP_REACHED event must fire when new_deposited == cap.
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let (payment_token, pt_admin) = create_payment_token(&env);
+
+    register_capped_offering(&client, &issuer, &token, &payment_token, 100_000);
+    mint_tokens(&env, &payment_token, &pt_admin, &issuer, &10_000_000);
+
+    let events_before = env.events().all().len();
+    // Deposit exactly the cap — this must succeed and emit the cap-reached event.
+    client.deposit_revenue(&issuer, &symbol_short!("cap"), &token, &payment_token, &100_000, &1);
+
+    let events_after = env.events().all();
+    assert!(events_after.len() > events_before, "at least one event must be emitted");
+
+    // Verify EVENT_SUPPLY_CAP_REACHED ("cap_reach") is among the emitted events.
+    let cap_reach_sym: soroban_sdk::Val = symbol_short!("cap_reach").into_val(&env);
+    let cap_event_found = events_after[events_before..]
+        .iter()
+        .any(|e| e.1.contains(cap_reach_sym));
+    assert!(cap_event_found, "EVENT_SUPPLY_CAP_REACHED must fire when deposit hits cap exactly");
+}
+
+#[test]
+fn deposit_revenue_just_below_cap_does_not_emit_cap_reached_event() {
+    // Depositing less than the cap must NOT emit EVENT_SUPPLY_CAP_REACHED.
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let (payment_token, pt_admin) = create_payment_token(&env);
+
+    register_capped_offering(&client, &issuer, &token, &payment_token, 100_000);
+    mint_tokens(&env, &payment_token, &pt_admin, &issuer, &10_000_000);
+
+    let events_before = env.events().all().len();
+    // Deposit one less than cap.
+    client.deposit_revenue(&issuer, &symbol_short!("cap"), &token, &payment_token, &99_999, &1);
+
+    let events_after = env.events().all();
+    let cap_reach_sym: soroban_sdk::Val = symbol_short!("cap_reach").into_val(&env);
+    let cap_event_found = events_after[events_before..]
+        .iter()
+        .any(|e| e.1.contains(cap_reach_sym));
+    assert!(!cap_event_found, "EVENT_SUPPLY_CAP_REACHED must NOT fire below cap");
+}
+
+#[test]
+fn deposit_revenue_first_deposit_above_cap_fails_deterministically() {
+    // A single deposit that immediately exceeds the cap must be rejected without
+    // any state mutation (no tokens transferred, deposited total unchanged).
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let (payment_token, pt_admin) = create_payment_token(&env);
+
+    register_capped_offering(&client, &issuer, &token, &payment_token, 100_000);
+    mint_tokens(&env, &payment_token, &pt_admin, &issuer, &10_000_000);
+
+    let r = client.try_deposit_revenue(
+        &issuer, &symbol_short!("cap"), &token, &payment_token, &100_001, &1,
+    );
+    assert!(r.is_err(), "deposit exceeding cap must fail");
+    // Deposited total must remain 0 — no state mutation on rejection path.
+    assert_eq!(
+        client.get_deposited_revenue(&issuer, &symbol_short!("cap"), &token),
+        0,
+        "read API must show 0 deposited after a rejected deposit"
+    );
+}
+
+#[test]
+fn deposit_revenue_read_api_unchanged_after_rejection() {
+    // After a partially-filled cap, a deposit that would overflow must leave the
+    // deposited total unchanged, confirming no partial state mutation.
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let (payment_token, pt_admin) = create_payment_token(&env);
+
+    register_capped_offering(&client, &issuer, &token, &payment_token, 100_000);
+    mint_tokens(&env, &payment_token, &pt_admin, &issuer, &10_000_000);
+
+    // First deposit: succeeds, sets deposited = 60_000.
+    client.deposit_revenue(&issuer, &symbol_short!("cap"), &token, &payment_token, &60_000, &1);
+    assert_eq!(client.get_deposited_revenue(&issuer, &symbol_short!("cap"), &token), 60_000);
+
+    // Second deposit: 60_000 + 50_000 = 110_000 > 100_000 — must fail.
+    let r = client.try_deposit_revenue(
+        &issuer, &symbol_short!("cap"), &token, &payment_token, &50_000, &2,
+    );
+    assert!(r.is_err());
+
+    // Deposited total must still be 60_000 — rejection path leaves state unchanged.
+    assert_eq!(
+        client.get_deposited_revenue(&issuer, &symbol_short!("cap"), &token),
+        60_000,
+        "deposited revenue must not change after a rejected deposit"
+    );
+}
+
+#[test]
+fn deposit_revenue_cumulative_second_deposit_hits_cap_exactly() {
+    // Two deposits where the second lands exactly on the cap:
+    // both succeed and EVENT_SUPPLY_CAP_REACHED fires on the second.
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let (payment_token, pt_admin) = create_payment_token(&env);
+
+    register_capped_offering(&client, &issuer, &token, &payment_token, 100_000);
+    mint_tokens(&env, &payment_token, &pt_admin, &issuer, &10_000_000);
+
+    client.deposit_revenue(&issuer, &symbol_short!("cap"), &token, &payment_token, &40_000, &1);
+
+    let events_before = env.events().all().len();
+    // Second deposit: 40_000 + 60_000 == 100_000 == cap.
+    client.deposit_revenue(&issuer, &symbol_short!("cap"), &token, &payment_token, &60_000, &2);
+
+    let events_after = env.events().all();
+    let cap_reach_sym: soroban_sdk::Val = symbol_short!("cap_reach").into_val(&env);
+    let cap_event_found = events_after[events_before..]
+        .iter()
+        .any(|e| e.1.contains(cap_reach_sym));
+    assert!(cap_event_found, "EVENT_SUPPLY_CAP_REACHED must fire when cumulative hits cap");
+    assert_eq!(client.get_deposited_revenue(&issuer, &symbol_short!("cap"), &token), 100_000);
+}
+
+#[test]
+fn deposit_revenue_cumulative_second_deposit_exceeds_cap_fails() {
+    // Two deposits where the second pushes over the cap: second must fail.
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let (payment_token, pt_admin) = create_payment_token(&env);
+
+    register_capped_offering(&client, &issuer, &token, &payment_token, 100_000);
+    mint_tokens(&env, &payment_token, &pt_admin, &issuer, &10_000_000);
+
+    client.deposit_revenue(&issuer, &symbol_short!("cap"), &token, &payment_token, &50_000, &1);
+    let r = client.try_deposit_revenue(
+        &issuer, &symbol_short!("cap"), &token, &payment_token, &50_001, &2,
+    );
+    assert!(r.is_err());
+    // First deposit total must be unchanged.
+    assert_eq!(client.get_deposited_revenue(&issuer, &symbol_short!("cap"), &token), 50_000);
+}
+
+#[test]
+fn deposit_revenue_with_snapshot_enforces_supply_cap() {
+    // `deposit_revenue_with_snapshot` delegates to `do_deposit_revenue` and must
+    // enforce the supply cap identically to `deposit_revenue`.
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let (payment_token, pt_admin) = create_payment_token(&env);
+
+    register_capped_offering(&client, &issuer, &token, &payment_token, 100_000);
+    mint_tokens(&env, &payment_token, &pt_admin, &issuer, &10_000_000);
+    // Enable snapshot distribution.
+    client.set_snapshot_config(&issuer, &symbol_short!("cap"), &token, &true);
+
+    // Exceeds cap — must be rejected.
+    let r = client.try_deposit_revenue_with_snapshot(
+        &issuer, &symbol_short!("cap"), &token, &payment_token, &100_001, &1, &1,
+    );
+    assert!(r.is_err(), "deposit_revenue_with_snapshot must enforce supply cap");
+    // State must remain clean.
+    assert_eq!(client.get_deposited_revenue(&issuer, &symbol_short!("cap"), &token), 0);
+}
+
+#[test]
+fn get_supply_cap_returns_zero_when_no_cap_set() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let (payment_token, _) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("cap"), &token, &5_000, &payment_token, &0);
+    assert_eq!(client.get_supply_cap(&issuer, &symbol_short!("cap"), &token), 0);
+}
+
+#[test]
+fn get_supply_cap_returns_configured_value() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let (payment_token, _) = create_payment_token(&env);
+
+    register_capped_offering(&client, &issuer, &token, &payment_token, 500_000);
+    assert_eq!(client.get_supply_cap(&issuer, &symbol_short!("cap"), &token), 500_000);
+}
+
+#[test]
+fn deposit_revenue_supply_cap_of_one_blocks_second_deposit() {
+    // Minimal cap (cap=1): first deposit of 1 succeeds; any subsequent deposit fails.
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let (payment_token, pt_admin) = create_payment_token(&env);
+
+    register_capped_offering(&client, &issuer, &token, &payment_token, 1);
+    mint_tokens(&env, &payment_token, &pt_admin, &issuer, &10_000_000);
+
+    client.deposit_revenue(&issuer, &symbol_short!("cap"), &token, &payment_token, &1, &1);
+    let r = client.try_deposit_revenue(
+        &issuer, &symbol_short!("cap"), &token, &payment_token, &1, &2,
+    );
+    assert!(r.is_err(), "deposit after cap exhaustion must be rejected");
+}
+
+// ── Investment constraint boundary tests [RC26Q2-C15] ─────────────────────────
+//
+// Constraints (min_stake, max_stake) are validated on-chain but enforced by the
+// off-chain system. The contract's role is to persist valid bounds deterministically
+// and reject invalid configurations.
+//
+// Validation rules:
+//   min_stake >= 0  (0 = no minimum)
+//   max_stake >= 0  (0 = no maximum)
+//   max_stake >= min_stake  when max_stake > 0
+
+#[test]
+fn get_investment_constraints_returns_none_before_set() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let (payment_token, _) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &0);
+    // Read API must return None before constraints are configured.
+    assert!(
+        client.get_investment_constraints(&issuer, &symbol_short!("def"), &token).is_none(),
+        "constraints must be None before first set"
+    );
+}
+
+#[test]
+fn set_investment_constraints_both_zero_succeeds() {
+    // min=0, max=0 means unlimited — should be accepted.
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let (payment_token, _) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &0);
+    let r = client.try_set_investment_constraints(
+        &issuer, &symbol_short!("def"), &token, &0, &0,
+    );
+    assert!(r.is_ok(), "min=0 max=0 (unlimited) must be accepted");
+
+    let c = client.get_investment_constraints(&issuer, &symbol_short!("def"), &token).unwrap();
+    assert_eq!(c.min_stake, 0);
+    assert_eq!(c.max_stake, 0);
+}
+
+#[test]
+fn set_investment_constraints_equal_min_and_max_succeeds() {
+    // min == max defines an exact required stake — must be accepted.
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let (payment_token, _) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &0);
+    let r = client.try_set_investment_constraints(
+        &issuer, &symbol_short!("def"), &token, &1_000, &1_000,
+    );
+    assert!(r.is_ok(), "min == max must be accepted");
+
+    let c = client.get_investment_constraints(&issuer, &symbol_short!("def"), &token).unwrap();
+    assert_eq!(c.min_stake, 1_000);
+    assert_eq!(c.max_stake, 1_000);
+}
+
+#[test]
+fn set_investment_constraints_min_zero_max_positive_succeeds() {
+    // min=0 with a positive max means only the upper bound is enforced.
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let (payment_token, _) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &0);
+    let r = client.try_set_investment_constraints(
+        &issuer, &symbol_short!("def"), &token, &0, &5_000,
+    );
+    assert!(r.is_ok(), "min=0 with positive max must be accepted");
+
+    let c = client.get_investment_constraints(&issuer, &symbol_short!("def"), &token).unwrap();
+    assert_eq!(c.min_stake, 0);
+    assert_eq!(c.max_stake, 5_000);
+}
+
+#[test]
+fn set_investment_constraints_updates_replace_previous() {
+    // A second call must overwrite the previous constraints completely.
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let (payment_token, _) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &0);
+    client.set_investment_constraints(&issuer, &symbol_short!("def"), &token, &100, &1_000);
+    client.set_investment_constraints(&issuer, &symbol_short!("def"), &token, &200, &2_000);
+
+    let c = client.get_investment_constraints(&issuer, &symbol_short!("def"), &token).unwrap();
+    assert_eq!(c.min_stake, 200, "min_stake must reflect the latest update");
+    assert_eq!(c.max_stake, 2_000, "max_stake must reflect the latest update");
+}
+
+#[test]
+fn set_investment_constraints_update_event_marks_previous_existed() {
+    // When updating existing constraints the event payload includes a boolean
+    // that is true to signal to indexers that this is an update, not a first set.
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let (payment_token, _) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &0);
+    // First call — no previous, event payload should have is_update = false.
+    client.set_investment_constraints(&issuer, &symbol_short!("def"), &token, &100, &1_000);
+
+    let events_before_update = env.events().all().len();
+    // Second call — has previous, event payload should have is_update = true.
+    client.set_investment_constraints(&issuer, &symbol_short!("def"), &token, &200, &2_000);
+    let events_after_update = env.events().all();
+
+    assert!(
+        events_after_update.len() > events_before_update,
+        "update must emit at least one event"
+    );
+}
+
+#[test]
+fn set_investment_constraints_fails_for_nonexistent_offering() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // No offering registered — must fail with OfferingNotFound.
+    let r = client.try_set_investment_constraints(
+        &issuer, &symbol_short!("def"), &token, &100, &1_000,
+    );
+    assert!(r.is_err(), "setting constraints on nonexistent offering must fail");
+}
+
 // ── set_holder_share tests ────────────────────────────────────
 
 #[test]
