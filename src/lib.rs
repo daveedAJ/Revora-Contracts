@@ -136,6 +136,11 @@ pub enum RevoraError {
     UnauthorizedRotationAccept = 36,
 }
 
+pub mod vesting;
+
+#[cfg(test)]
+mod vesting_test;
+
 // ── Event symbols ────────────────────────────────────────────
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
 const EVENT_BL_ADD: Symbol = symbol_short!("bl_add");
@@ -5496,26 +5501,6 @@ impl RevoraRevenueShare {
             return Err(RevoraError::ProposalExpired);
         }
 
-        let threshold: u32 =
-            env.storage().persistent().get(&DataKey::MultisigThreshold).unwrap_or(1);
-        if proposal.approvals.len() < threshold {
-            return Err(RevoraError::LimitReached);
-        }
-
-        proposal.executed = true;
-        env.storage().persistent().set(&key, &proposal);
-
-        let key = DataKey::MultisigProposal(proposal_id);
-        let mut proposal: Proposal =
-            env.storage().persistent().get(&key).ok_or(RevoraError::OfferingNotFound)?;
-
-        if proposal.executed {
-            return Err(RevoraError::LimitReached);
-        }
-        if env.ledger().timestamp() >= proposal.expiry {
-            return Err(RevoraError::ProposalExpired);
-        }
-
         let threshold: u32 = env
             .storage()
             .persistent()
@@ -5524,6 +5509,9 @@ impl RevoraRevenueShare {
         if proposal.approvals.len() < threshold {
             return Err(RevoraError::LimitReached);
         }
+
+        proposal.executed = true;
+        env.storage().persistent().set(&key, &proposal);
 
         match proposal.action.clone() {
             ProposalAction::SetAdmin(new_admin) => {
@@ -5556,9 +5544,10 @@ impl RevoraRevenueShare {
             ProposalAction::RemoveOwner(old_owner) => {
                 let owners: Vec<Address> =
                     env.storage().persistent().get(&DataKey::MultisigOwners).unwrap();
-                if !owners.contains(&addr) {
+                if !owners.contains(&old_owner) {
                     return Err(RevoraError::NotAuthorized);
                 }
+                // Threshold invariant: remaining owners must still satisfy threshold.
                 if (owners.len() - 1) < threshold {
                     return Err(RevoraError::LimitReached);
                 }
@@ -5570,8 +5559,7 @@ impl RevoraRevenueShare {
                         new_owners.push_back(owner);
                     }
                 }
-                owners = new_owners;
-                env.storage().persistent().set(&DataKey::MultisigOwners, &owners);
+                env.storage().persistent().set(&DataKey::MultisigOwners, &new_owners);
             }
             ProposalAction::SetProposalDuration(new_duration) => {
                 if new_duration == 0 {

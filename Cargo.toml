@@ -17,3 +17,6 @@ soroban-sdk = { version = "22.0.0", features = ["testutils", "alloc"] }
 [profile.release]
 opt-level = "z"
 overflow-checks = true
+
+[workspace]
+
