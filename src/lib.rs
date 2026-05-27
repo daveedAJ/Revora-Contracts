@@ -1517,6 +1517,12 @@ impl RevoraRevenueShare {
         }
     }
 
+    /// Enable or disable testnet mode for the contract.
+    ///
+    /// ### Security Note
+    /// This mode MUST only be enabled on test networks. It relaxes critical
+    /// validation rules (like concentration limits) to facilitate automated
+    /// testing and integration flows.
     pub fn set_testnet_mode(env: Env, enabled: bool) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
         let admin: Address =
@@ -2220,12 +2226,17 @@ impl RevoraRevenueShare {
                 return Err(RevoraError::PayoutAssetMismatch);
             }
 
+            // Testnet mode bypass: if enabled, skip concentration limit enforcement
+            // to allow flexible testing of revenue flows without holder constraints.
             let testnet_mode = Self::is_testnet_mode(env.clone());
             if !testnet_mode {
                 let limit_key = DataKey::ConcentrationLimit(offering_id.clone());
                 if let Some(config) =
                     env.storage().persistent().get::<DataKey, ConcentrationLimitConfig>(&limit_key)
                 {
+                    // Concentration Enforcement: if enforce=true and max_bps > 0,
+                    // reject report if current concentration exceeds the limit.
+                    // Allowed: current <= max_bps. Rejected: current > max_bps.
                     if config.enforce && config.max_bps > 0 {
                         let curr_key = DataKey::CurrentConcentration(offering_id.clone());
                         let current: u32 = env.storage().persistent().get(&curr_key).unwrap_or(0);
@@ -3183,12 +3194,14 @@ impl RevoraRevenueShare {
     /// - `Ok(())` on success.
     /// - `Err(RevoraError::LimitReached)` if the offering is not found.
     /// - `Err(RevoraError::ContractFrozen)` if the contract is frozen.
+    /// Configure the concentration limit for an offering.
     ///
-    /// ### Auth ordering
-    /// `issuer.require_auth()` is called immediately after the frozen/paused guards so that
-    /// unauthenticated callers cannot probe offering existence or trigger any side effects.
-    /// The identity check (`current_issuer != issuer`) follows auth, consistent with all other
-    /// issuer-gated setters in this contract.
+    /// ### Parameters
+    /// - `max_bps`: The maximum allowed share for a single holder in basis points.
+    /// - `enforce`: If true, `report_revenue` will fail if current concentration > `max_bps`.
+    ///
+    /// ### Constraints
+    /// - `max_bps` must be <= 10,000.
     pub fn set_concentration_limit(
         env: Env,
         issuer: Address,
@@ -3243,6 +3256,11 @@ impl RevoraRevenueShare {
     ///
     /// Stores the provided concentration value. If it exceeds the configured limit,
     /// a `conc_warn` event is emitted. The stored value is used for enforcement in `report_revenue`.
+    ///
+    /// ### Enforcement Boundary
+    /// - If `enforce` is true in `ConcentrationLimitConfig`:
+    ///   - `concentration_bps <= max_bps`: `report_revenue` is allowed.
+    ///   - `concentration_bps > max_bps`: `report_revenue` is rejected.
     ///
     /// ### Parameters
     /// - `issuer`: The offering issuer. Must provide authentication.
