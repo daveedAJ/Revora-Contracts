@@ -2098,7 +2098,12 @@ impl RevoraRevenueShare {
 
     /// Return the locked payment token for an offering.
     ///
-    /// Returns `None` until the first successful deposit persists the `PaymentToken` key.
+    /// Returns `None` when:
+    /// - the offering is unknown, or
+    /// - the offering exists but has not yet recorded a successful deposit.
+    ///
+    /// Once the first successful deposit persists the `PaymentToken` key, this returns
+    /// `Some(payment_token)` for that locked token.
     pub fn get_payment_token(
         env: Env,
         issuer: Address,

@@ -25,7 +25,7 @@ Soroban contract for revenue-share offerings and blacklist management.
 |--------|------------|---------|------|-------------|
 | `register_offering` | `issuer: Address`, `token: Address`, `revenue_share_bps: u32` | `Result<(), RevoraError>` | issuer | Register a revenue-share offering. Fails with `InvalidRevenueShareBps` if `revenue_share_bps > 10000`. |
 | `get_offering` | `issuer: Address`, `token: Address` | `Option<Offering>` | — | Fetch one offering by issuer and token. |
-| `get_payment_token` | `issuer: Address`, `namespace: Symbol`, `token: Address` | `Option<Address>` | — | Return the payment token locked by the first successful deposit. Returns `None` before the first successful deposit or for an unknown offering. |
+| `get_payment_token` | `issuer: Address`, `namespace: Symbol`, `token: Address` | `Option<Address>` | — | Return the payment token locked by the first successful deposit. Returns `None` if the offering is unknown or if the offering exists but has not yet received a successful deposit. |
 | `list_offerings` | `issuer: Address` | `Vec<Address>` | — | List offering tokens for issuer (first page only, up to 20). |
 | `report_revenue` | `issuer: Address`, `token: Address`, `amount: i128`, `period_id: u64` | `Result<(), RevoraError>` | issuer | Emit or correct a revenue report. New periods update `AuditSummary`; existing periods may be corrected with `override_existing=true`, which emits explicit override events and applies the net delta to `total_revenue` without incrementing `report_count`. |
 | `get_offering_count` | `issuer: Address` | `u32` | — | Total offerings registered by issuer. |

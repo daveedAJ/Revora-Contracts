@@ -1823,6 +1823,37 @@ fn get_payment_token_returns_none_for_unknown_offering() {
 }
 
 #[test]
+fn failed_invalid_first_deposit_does_not_lock_payment_token() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let offering_token = Address::generate(&env);
+    let payment_token = Address::generate(&env);
+
+    client.register_offering(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &5_000,
+        &payment_token,
+        &0,
+    );
+
+    let result = client.try_deposit_revenue(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &payment_token,
+        &100_000,
+        &0,
+    );
+
+    assert_eq!(result, Err(Ok(RevoraError::InvalidPeriodId)));
+    assert_eq!(client.get_payment_token(&issuer, &symbol_short!("def"), &offering_token), None);
+}
+
+#[test]
 fn deposit_revenue_multiple_periods() {
     let (_env, client, issuer, token, payment_token, _contract_id) = claim_setup();
 
